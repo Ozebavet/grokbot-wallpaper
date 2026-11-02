@@ -2,6 +2,8 @@
 // With #<topic> in the link it reads the user's bots from their channel instead (feed.js, lib/feedbase.js): no server.
 // Without either (static preview) it runs on web/data/demo-state.json with a local simulation.
 import { initScene, renderScene, zoom, focusBot } from './scene/scene.js';
+import { resolveIdleConfig } from './scene/idle-config.js';
+import { presentState } from './scene/layout.js';
 import { initSound, sfx } from './audio/sound.js';
 
 const POLL_MS = 1000;
@@ -14,6 +16,7 @@ let demoTimer = null;
 //   &floor=<id>   pin the floor (default: the floor with the most bots)
 //   &cycle=<sec>  go to the next floor every <sec> seconds through the normal elevator switch
 const params = new URLSearchParams(location.search);
+const layoutCfg = resolveIdleConfig(params);
 const WALLPAPER = params.get('mode') === 'wallpaper';
 if (WALLPAPER) document.documentElement.classList.add('wallpaper');
 
@@ -40,12 +43,15 @@ if (!WALLPAPER) initSound({ slot: document.querySelector('#topbar .bhq-right') }
 
 addEventListener('keydown', (e) => { if (e.key === 'Escape') select(null); });
 
+function shownNow() { return state ? presentState(state, layoutCfg) : null; }
+
 function select(id) {
   const before = view.selectedBot;
-  view.selectedBot = id && state?.bots[id] ? id : null;
+  const shown = shownNow();
+  view.selectedBot = id && shown?.bots[id] ? id : null;
   if (view.selectedBot !== before) sfx.select(!!view.selectedBot);
   if (view.selectedBot) {
-    const bot = state.bots[view.selectedBot];
+    const bot = shown.bots[view.selectedBot];
     if (bot.floor !== view.currentFloor) setFloor(bot.floor, true);
     render();
     requestAnimationFrame(() => focusBot(view.selectedBot));
@@ -55,9 +61,10 @@ function select(id) {
 }
 
 function setFloor(id, keepSelection = false) {
-  if (!state?.floors.some((f) => f.id === id)) return;
+  const shown = shownNow();
+  if (!shown?.floors.some((f) => f.id === id)) return;
   if (id !== view.currentFloor) {                        // the elevator's chime rings higher on higher floors
-    const order = [...state.floors].sort((a, b) => (a.order ?? 0) - (b.order ?? 0)).findIndex((f) => f.id === id);
+    const order = [...shown.floors].sort((a, b) => (a.order ?? 0) - (b.order ?? 0)).findIndex((f) => f.id === id);
     sfx.floor(order);
   }
   view.currentFloor = id;
@@ -92,10 +99,15 @@ if (cycleSec >= 5) {
 
 function render() {
   if (!state) return;
-  if (!view.currentFloor || !state.floors.some((f) => f.id === view.currentFloor)) view.currentFloor = pickDefaultFloor();
-  if (view.selectedBot && !state.bots[view.selectedBot]) view.selectedBot = null;
-  renderScene(state, view);
-  ui.renderUI(state, view);
+  const shown = presentState(state, layoutCfg);
+  if (!view.currentFloor || !shown.floors.some((f) => f.id === view.currentFloor)) {
+    view.currentFloor = shown === state
+      ? pickDefaultFloor()
+      : [...shown.floors].sort((a, b) => (b.bots?.length || 0) - (a.bots?.length || 0))[0]?.id ?? null;
+  }
+  if (view.selectedBot && !shown.bots[view.selectedBot]) view.selectedBot = null;
+  renderScene(shown, view);
+  ui.renderUI(shown, view);
   if (!WALLPAPER) soundStatusChanges();
 }
 
@@ -154,7 +166,8 @@ async function startLocalDemo() {
   const cast = Number(params.get('idleCast'));
   const pinned = cast > 0 && pinIdleCast(state, cast);
   render();
-  if (!pinned) demoTimer = setInterval(simulate, 1600);
+  const hold = params.get('holdDemo') === '1';
+  if (!pinned && !hold) demoTimer = setInterval(simulate, 1600);
   window.bothq = Object.assign(window.bothq || {}, {
     holdDemo() { if (demoTimer) { clearInterval(demoTimer); demoTimer = null; } },
   });
