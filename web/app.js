@@ -149,8 +149,34 @@ async function startLocalDemo() {
   const res = await fetch('./data/demo-state.json', { cache: 'no-store' });
   state = await res.json();
   state.demoLocal = true;
+  // Demo preview: ?idleCast=4 pins that many bots on the fullest floor to idle (the stock
+  // file has one idle bot per floor) and pauses the random status shuffle so the lounge stays put.
+  const cast = Number(params.get('idleCast'));
+  const pinned = cast > 0 && pinIdleCast(state, cast);
   render();
-  demoTimer = setInterval(simulate, 1600);
+  if (!pinned) demoTimer = setInterval(simulate, 1600);
+  window.bothq = Object.assign(window.bothq || {}, {
+    holdDemo() { if (demoTimer) { clearInterval(demoTimer); demoTimer = null; } },
+  });
+}
+
+// On the fullest floor, rest extra working bots until `n` are idle. Waiting, error, stuck and
+// done bots stay as they are, and at least one bot keeps working at a desk.
+function pinIdleCast(state, n) {
+  const floor = [...state.floors].sort((a, b) => b.bots.length - a.bots.length)[0];
+  if (!floor) return false;
+  const bots = floor.bots.map((id) => state.bots[id]).filter(Boolean);
+  const status = (b) => b.effective_status || b.status;
+  const workers = () => bots.filter((b) => status(b) === 'working');
+  const idleCount = () => bots.filter((b) => status(b) === 'idle').length;
+  while (idleCount() < n && workers().length > 1) {
+    const b = workers()[0];
+    b.status = b.effective_status = 'idle';
+    b.step = 'waiting for a new task';
+    b.task = null;
+  }
+  recount();
+  return true;
 }
 
 const STEPS = {
