@@ -4,6 +4,7 @@
 import * as THREE from 'three';
 import { CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
 import { Spring, REDUCED, clamp, smoothstep } from './spring.js';
+import { chooseIdleActivity, mulberry32, enabledActivityList, planIdleRoute } from './idle.js';
 
 export const STATUS_COLOR = {
   working: '#34C759', idle: '#A1A1A6', waiting_user: '#FF9F0A', error: '#FF3B30', stuck: '#FF9500', done: '#0A84FF',
@@ -151,9 +152,17 @@ export class Actor {
     this.selected = view.selectedBot === bot.id;
     this.renderTag();
 
-    if (spot && (!this.spot || this.spot.pos.distanceToSquared(spot.pos) > 1e-4)) {
-      if (!this.spot) this.dropIn(spot); else this.travelTo(spot);
-      this.spot = spot;
+    const idleOn = status === 'idle' && !!view?.idle?.enabled;
+    if (idleOn) {
+      this.idleCtrl = view.idle;
+      if (!this.driveIdle && !this.idleGaveUp) this.beginIdle(spot);
+    } else {
+      this.idleGaveUp = false;
+      if (this.driveIdle) this.endIdle();
+      if (spot && (!this.spot || this.spot.pos.distanceToSquared(spot.pos) > 1e-4)) {
+        if (!this.spot) this.dropIn(spot); else this.travelTo(spot);
+        this.spot = spot;
+      }
     }
     this.ring.position.y = 0.012 - (this.spot ? this.spot.pos.y : 0);
 
@@ -195,6 +204,7 @@ export class Actor {
     if (this.retiring) return;
     this.retiring = true;
     this.hovered = false;
+    this.endIdle();
     this.scaleS.to(0);
     for (const o of this.pickMeshes || []) this.ctx.pickables.delete(o);
     this.tagEl.dataset.mode = 'off';
@@ -212,12 +222,50 @@ export class Actor {
     if (this.ctx.dropDelay > 0) this.scaleS.to(1, this.ctx.dropDelay);
   }
 
-  travelTo(spot) {
+  travelTo(spot, opts = {}) {
     const from = this.root.position.clone();
     const dist = from.distanceTo(spot.pos);
+    const stroll = !!opts.stroll;
     if (REDUCED || dist < 0.05) { this.root.position.copy(spot.pos); this.baseYaw = spot.yaw; return; }
     const dir = new THREE.Vector3().subVectors(spot.pos, from);
-    this.anim = { kind: 'travel', t: 0, dur: Math.max(0.8, dist / 2.6), from, to: spot.pos.clone(), toYaw: spot.yaw, travelYaw: Math.atan2(dir.x, dir.z) };
+    const speed = stroll ? (opts.speed || 0.85) : 2.6;
+    this.anim = {
+      kind: stroll ? 'stroll' : 'travel', t: 0,
+      dur: Math.max(stroll ? 0.9 : 0.8, dist / speed),
+      from, to: spot.pos.clone(), toYaw: spot.yaw, travelYaw: Math.atan2(dir.x, dir.z),
+      hop: stroll ? 0.1 : 0.55,
+    };
+  }
+
+  strollTo(spot, speed, pause = 0.4) {
+    this.travelTo(spot, { stroll: true, speed });
+    if (this.idle) this.idle.pause = pause;
+  }
+
+  // Walk to a spot, detouring around the tables and the lounge when the straight line crosses them.
+  beginMove(spot, speed) {
+    const from = { x: this.root.position.x, z: this.root.position.z };
+    const pts = planIdleRoute(from, { x: spot.pos.x, z: spot.pos.z });
+    this.idle.detour = pts.slice(0, -1).map((p, i) => {
+      const n = pts[i + 1];
+      return { pos: new THREE.Vector3(p.x, 0, p.z), yaw: Math.atan2(n.x - p.x, n.z - p.z) };
+    });
+    this.idle.detourFinal = spot;
+    this.idle.speed = speed || this.idle.speed || 0.85;
+    this.stepDetour();
+  }
+
+  stepDetour() {
+    if (this.idle.detour?.length) {
+      this.strollTo(this.idle.detour.shift(), this.idle.speed, 0.08);
+      return;
+    }
+    if (this.idle.detourFinal) {
+      const spot = this.idle.detourFinal;
+      this.idle.detourFinal = null;
+      this.spot = spot;
+      this.strollTo(spot, this.idle.speed, 0.35);
+    }
   }
 
   hop(height) {
@@ -261,7 +309,151 @@ export class Actor {
     f.halo.material.opacity = 0.6 * Math.sin(Math.PI * fk);
   }
 
+  // ---------- idle activities (status === 'idle', unless sofaOnly) ----------
+
+  ensureIdleRng() {
+    if (this.idleRng) return;
+    const name = this.bot?.name || this.id;
+    const seed = hash(`${name}:idle`);
+    this.idleRng = mulberry32(seed);
+    this.idleTempo = 0.82 + (hash(`${name}:tempo`) % 1000) / 1000 * 0.4;
+    const kinds = enabledActivityList(this.idleCtrl.config);
+    this.idleFavorite = kinds.length ? kinds[seed % kinds.length] : null;
+  }
+
+  beginIdle(desk) {
+    this.ensureIdleRng();
+    const choice = chooseIdleActivity(this.idleActor(), this.idleCtrl, this.idleRng, null);
+    if (!choice) {
+      this.driveIdle = false;
+      this.idleGaveUp = true;
+      if (!this.spot && desk) { this.dropIn(desk); this.spot = desk; }
+      return;
+    }
+    this.driveIdle = true;
+    this.idle = { kind: null, left: 0, poseT: this.idleRng() * 4, pause: 0.3, path: null, pathI: 0, speed: 0.85 };
+    this.applyChoice(choice, !this.spot);
+  }
+
+  endIdle() {
+    if (!this.driveIdle && !this.idle) return;
+    this.driveIdle = false;
+    this.idle = null;
+    this.idleGaze = null;
+    this.idleBody = null;
+    this.idleCtrl?.release(this.id);
+  }
+
+  idleActor() {
+    const b = this.bot || {};
+    return { id: this.id, name: b.name, group: b.group, favorite: this.idleFavorite };
+  }
+
+  applyChoice(choice, drop) {
+    const first = !this.idle.kind;
+    this.idle.kind = choice.kind;
+    this.idle.path = choice.path || null;
+    this.idle.pathI = choice.index || 0;
+    this.idle.speed = choice.speed || 0.85;
+    this.idle.poseT = first ? this.idle.poseT : this.idleRng() * 2;
+    const { min, max } = this.idleCtrl.config.duration;
+    let dur = (min + this.idleRng() * (max - min)) / this.idleTempo;
+    dur = clamp(dur, min, max);
+    this.idle.left = first ? Math.max(6, dur * (0.45 + this.idleRng() * 0.55)) : dur;
+    this.spot = choice.spot;
+    if (drop) {
+      this.dropIn(choice.spot);
+      this.idle.detour = [];
+      this.idle.detourFinal = null;
+      this.idle.pause = 0.35;
+    } else this.beginMove(choice.spot, this.idle.speed);
+  }
+
+  advanceIdle() {
+    const prev = this.idle?.kind || null;
+    const choice = chooseIdleActivity(this.idleActor(), this.idleCtrl, this.idleRng, prev);
+    if (!choice) { this.idle.left = 4; return; }
+    this.applyChoice(choice, false);
+  }
+
+  stepPath() {
+    const path = this.idle.path;
+    if (!path || path.length < 2) return;
+    const sep = this.idleCtrl.config.separation || 0.9;
+    let i = (this.idle.pathI + 1) % path.length;
+    if (this.idleCtrl.blocked(path[i].pos, sep, this.id)) { this.idle.pause = 0.7; return; }
+    this.idle.pathI = i;
+    this.spot = path[i];
+    this.beginMove(path[i], this.idle.speed);
+  }
+
+  tickIdle(dt) {
+    if (!this.driveIdle || !this.idle || this.retiring) return;
+    if (this.anim?.kind === 'drop') return;
+    const moving = this.anim?.kind === 'stroll' || this.anim?.kind === 'travel';
+    const routing = !!(this.idle.detourFinal || this.idle.detour?.length);
+    if (routing) {
+      if (!moving) {
+        this.idle.pause -= dt;
+        if (this.idle.pause <= 0) this.stepDetour();
+      }
+      return;
+    }
+    this.idle.left -= dt;
+    if (moving) return;
+    this.idle.poseT += dt;
+    if (this.idle.path) {
+      this.idle.pause -= dt;
+      if (this.idle.pause <= 0 && this.idle.left > 1.2) { this.stepPath(); return; }
+    }
+    if (this.idle.left <= 0) this.advanceIdle();
+  }
+
+  applyIdlePose() {
+    this.idleGaze = null;
+    this.idleBody = null;
+    if (!this.driveIdle || !this.idle || this.anim) return;
+    const pt = this.idle.poseT, ph = this.phase;
+    if (this.idle.kind === 'sofa') {
+      const period = 3.2, u = pt / period;
+      const slots = [
+        { yaw: 0, eyeX: 0, eyeY: 0, rx: 0.02 },
+        { yaw: -0.48, eyeX: -0.03, eyeY: 0, rx: 0.02 },
+        { yaw: 0.48, eyeX: 0.03, eyeY: 0, rx: 0.03 },
+        { yaw: 0.06, eyeX: 0, eyeY: 0.032, rx: -0.1 },
+      ];
+      const i0 = Math.floor(u) % slots.length, i1 = (i0 + 1) % slots.length;
+      const f = u - Math.floor(u);
+      const e = f < 0.55 ? 0 : (f - 0.55) / 0.45;
+      const k = e * e * (3 - 2 * e);
+      const a = slots[i0], b = slots[i1];
+      const mix = (p, q) => p + (q - p) * k;
+      this.idleGaze = { yaw: mix(a.yaw, b.yaw), eyeX: mix(a.eyeX, b.eyeX), eyeY: mix(a.eyeY, b.eyeY) };
+      this.idleBody = { rx: mix(a.rx, b.rx), sy: this.idleGaze.eyeY > 0.01 ? 1.03 : 1 };
+    } else if (this.idle.kind === 'window') {
+      const look = 0.5 + 0.5 * Math.sin(pt * 0.45 + ph);
+      this.idleBody = { rx: 0.08 + 0.07 * look, rz: 0.03 * Math.sin(pt * 0.55 + 1) };
+      this.idleGaze = { yaw: 0.14 * Math.sin(pt * 0.25 + ph), eyeX: 0.02 * Math.sin(pt * 0.22 + ph), eyeY: 0.01 + 0.022 * look };
+    } else if (this.idle.kind === 'stretch') {
+      const up = Math.max(0, Math.sin(pt * 1.15 + ph));
+      this.idleBody = { sy: 1 + 0.22 * up, sx: 1 - 0.1 * up, y: 0.055 * up, rz: 0.2 * Math.sin(pt * 0.75 + ph), rx: -0.07 * up };
+    } else if (this.idle.kind === 'coffee') {
+      const sip = Math.max(0, Math.sin(pt * 1.55 + ph));
+      this.idleBody = { rx: (this.spot?.seat ? 0.12 : 0.22) * sip, sy: 1 - 0.045 * sip };
+      this.idleGaze = { yaw: 0.08 * Math.sin(pt * 0.4 + ph), eyeX: 0, eyeY: -0.014 * sip };
+    } else if (this.idle.kind === 'lean') {
+      const sway = Math.sin(pt * 0.4 + ph);
+      this.idleBody = { rx: -0.14, rz: 0.18 + 0.04 * sway, sy: 0.94, sx: 1.04 };
+      this.idleGaze = { yaw: 0.28 * sway, eyeX: 0.02 * sway, eyeY: 0.006 };
+    } else {
+      const sway = Math.sin(pt * 0.5 + ph);
+      this.idleGaze = { yaw: 0.4 * sway, eyeX: 0.02 * sway, eyeY: 0 };
+    }
+  }
+
   tick(dt, t) {
+    this.tickIdle(dt);
+    this.applyIdlePose();
     const p = this.pivot;
     const s = this.status;
     let y = 0, sx = 1, sy = 1, rx = 0, rz = 0, ox = 0;
@@ -292,19 +484,31 @@ export class Actor {
         const fall = Math.min(1, k / 0.55);
         if (a.t >= 0) y = a.from * (1 - fall * fall);
         if (k > 0.55) ({ sx, sy } = squash((k - 0.55) / 0.45));
-      } else if (a.kind === 'travel') {
+      } else if (a.kind === 'travel' || a.kind === 'stroll') {
         const e = easeInOut(k);
         this.root.position.lerpVectors(a.from, a.to, e);
-        const hops = Math.max(1, Math.round(a.dur / 0.42));
+        const hop = a.hop ?? 0.55;
+        const step = a.kind === 'stroll' ? 0.55 : 0.42;
+        const hops = Math.max(1, Math.round(a.dur / step));
         const local = (k * hops) % 1;
-        y = 0.55 * Math.sin(local * Math.PI);
-        sy = 1 + 0.12 * Math.sin(local * Math.PI); sx = 1 - 0.07 * Math.sin(local * Math.PI);
+        const lift = Math.sin(local * Math.PI);
+        y = hop * lift;
+        sy = 1 + (a.kind === 'stroll' ? 0.05 : 0.12) * lift;
+        sx = 1 - (a.kind === 'stroll' ? 0.03 : 0.07) * lift;
         this.baseYaw = k < 0.92 ? a.travelYaw : a.toYaw;
       }
       if (a.t >= a.dur) {
-        if (a.kind === 'travel') { this.root.position.copy(a.to); this.baseYaw = a.toYaw; }
+        if (a.kind === 'travel' || a.kind === 'stroll') { this.root.position.copy(a.to); this.baseYaw = a.toYaw; }
         this.anim = null;
       }
+    }
+
+    if (!this.anim && this.idleBody) {
+      y += this.idleBody.y || 0;
+      sx *= this.idleBody.sx || 1;
+      sy *= this.idleBody.sy || 1;
+      rx += this.idleBody.rx || 0;
+      rz += this.idleBody.rz || 0;
     }
 
     // ---- cursor: look toward it, glance with the eyes, hop when it is close ----
@@ -318,14 +522,15 @@ export class Actor {
     this.hopCooldown -= dt;
     if (dist < HOP_RANGE && this.hopCooldown <= 0 && !this.anim && !REDUCED) { this.hop(0.26); this.hopCooldown = HOP_COOLDOWN; }
 
-    const base = (this.baseYaw || 0) + (this.anim?.kind === 'travel' ? 0 : RESTING_TURN);
+    const moving = this.anim?.kind === 'travel' || this.anim?.kind === 'stroll';
+    const base = (this.baseYaw || 0) + (moving ? 0 : RESTING_TURN);
     let target = base;
     if (this.hovered || this.selected) target = CAMERA_YAW;
     else if (w > 0) {
-      const seated = !this.spotIsLounge() && s !== 'idle';
+      const seated = (!this.spotIsLounge() && s !== 'idle') || (this.driveIdle && !!this.spot?.seat);
       const lim = seated ? 0.8 : 1.9;                               // seated bots never leave the desk
       target = base + clamp(angleDiff(lookYaw, base), -lim, lim) * w;
-    }
+    } else if (this.idleGaze) target = base + this.idleGaze.yaw;
     this.yawS.target = this.yawS.x + angleDiff(target, this.yawS.x);
     this.yawS.step(dt);
 
@@ -340,6 +545,9 @@ export class Actor {
       const ang = angleDiff(lookYaw, this.yawS.x);
       this.eyeX.to(Math.sin(clamp(ang, -1.2, 1.2)) * EYE_SHIFT * w);
       this.eyeY.to(-0.012 * w);
+    } else if (this.idleGaze && !this.hovered && !this.selected) {
+      this.eyeX.to(this.idleGaze.eyeX || 0);
+      this.eyeY.to(this.idleGaze.eyeY || 0);
     } else { this.eyeX.to(0); this.eyeY.to(0); }
     this.eyeX.step(dt); this.eyeY.step(dt);
 
@@ -363,7 +571,8 @@ export class Actor {
     if (!this.eyes.length) return;
     const s = this.status;
     let open = 1;
-    if (s === 'idle' && !this.spotIsLounge()) open = 0.12;        // sleeping at the desk
+    if (s === 'idle' && !this.driveIdle && !this.spotIsLounge()) open = 0.12;   // sofa-only overflow: sleeping at the desk
+    else if (this.driveIdle && this.idle?.kind === 'sofa') open = 0.86;
     else if (s === 'error') open = 0.55;
     else if (s === 'stuck') open = 0.7;
     if (open > 0.5 && !REDUCED) {

@@ -10,6 +10,8 @@ import { createDaylight } from './daylight.js';
 import { createPost } from './post.js';
 import { studioCss } from './studio.js';
 import { Actor } from './actor.js';
+import { resolveIdleConfig } from './idle-config.js';
+import { createIdleDirector } from './idle.js';
 import { generateBlob } from './blobgen.js';
 import { Spring, clamp } from './spring.js';
 import { sofiaHour, fontsPromise } from './walls.js';
@@ -30,6 +32,8 @@ const DESK_ORDER = [1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 2, 4, 6, 8, 10, 12, 14, 1
 
 let renderer, labels, camera, scene, container, callbacks, daylight, building, post;
 let assets = null;
+const idleConfig = resolveIdleConfig(location.search);
+let idleDirector = null;
 let lastState = null, lastView = { currentFloor: null, selectedBot: null };
 const actors = new Map();
 const retiring = new Set();
@@ -116,6 +120,8 @@ export function initScene(el, cbs = {}) {
     assets = a;
     building = new Building({ scene, daylight, assets: a, baseUrl: `${ASSETS}/office`, renderer });
     a.spots.lounges.forEach((s) => { if (s) s.lounge = true; });
+    idleDirector = createIdleDirector(a.spots.idle, idleConfig);
+    idleDirector.blocked = (pos, radius, selfId) => idleBlocked(pos, radius, selfId);
     window.bothq = Object.assign(window.bothq || {}, { source: a.source });
     resize();
     const go = () => { if (lastState) sync(); };
@@ -173,7 +179,8 @@ function sync() {
   for (const [id, actor] of actors) if (!ids.has(id)) { actor.retire(); retiring.add(actor); actors.delete(id); }
 
   const maxShare = Math.max(0.0001, ...floorBots.map((b) => b.usage_share || 0));
-  const lounge = assignLounge(floorBots);
+  const lounge = idleDirector?.enabled ? new Map() : assignLounge(floorBots);
+  const idleView = idleDirector?.enabled ? idleDirector : null;
   const flags = new Array(20).fill(0);
   const delay = Math.max(0, switchedAt + 0.55 - nowSec);
   for (const bot of floorBots) {
@@ -186,7 +193,7 @@ function sync() {
     const deskIdx = (DESK_ORDER[(bot.desk || 1) - 1] || 1) - 1;
     const desk = assets.spots.desks[deskIdx] || assets.spots.desks[0];
     if ((bot.effective_status || bot.status) === 'working' && !lounge.has(bot.id)) flags[deskIdx] = 1;
-    actor.update(bot, lounge.get(bot.id) || desk, { maxShare, selectedBot: view.selectedBot });
+    actor.update(bot, lounge.get(bot.id) || desk, { maxShare, selectedBot: view.selectedBot, idle: idleView });
   }
   building.setScreens(flags);
   const floor = floors.find((f) => f.id === building.activeId);
@@ -221,7 +228,24 @@ function settle(seconds = 3) {
   }
 }
 
-// Idle bots go to the lounge while seats last; the rest nap at their desks.
+// Another idle bot is already standing on (or walking to) this point.
+function idleBlocked(pos, radius, selfId) {
+  const r2 = radius * radius;
+  for (const [id, a] of actors) {
+    if (id === selfId) continue;
+    const p = a.root.position;
+    const dx = p.x - pos.x, dz = p.z - pos.z;
+    if (dx * dx + dz * dz < r2) return true;
+    const to = (a.anim?.kind === 'stroll' || a.anim?.kind === 'travel') ? a.anim.to : null;
+    if (to) {
+      const ex = to.x - pos.x, ez = to.z - pos.z;
+      if (ex * ex + ez * ez < r2) return true;
+    }
+  }
+  return false;
+}
+
+// Sofa-only mode (idle-config.js, or ?idle=sofa): idle bots take a lounge seat, the rest nap at their desks.
 function assignLounge(bots) {
   const map = new Map();
   const seats = assets.spots.lounges.filter(Boolean);

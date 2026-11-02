@@ -12,6 +12,7 @@ export const OPEN_H = 2.7;
 export const SHAFT_POS = new THREE.Vector2(9.05, -2.6);
 const SPOT_RE = /^(desk|screen|lounge)_(\d{2})$/;
 const LAMP_RE = /^lamp_(\d{2})$/;
+const IDLE_RE = /^idle_(path|window|wall|coffee|corridor|stretch)_(\d{2})$/;
 const NAMES = ['floor_open', 'floor_closed', 'roof', 'elevator_shaft', 'elevator_cabin'];
 
 export async function loadOfficeAssets(baseUrl) {
@@ -42,14 +43,21 @@ export async function loadOfficeAssets(baseUrl) {
     if (missing.length) console.warn('[office] placeholder used for missing nodes:', missing.join(', '));
   }
 
-  const spots = collectSpots(templates.floor_open);
+  let floor = templates.floor_open;
+  let night = ph ? ph.nightMaps : new Map();
+  let source = glb ? (missing.length ? 'glb+placeholder' : 'glb') : 'placeholder';
+  installIdleMarkers(floor);
+  let spots = collectSpots(floor);
   if (spots.desks.filter(Boolean).length < DESK_COUNT) {
     console.warn('[office] floor_open has fewer than 20 desk_NN empties: using placeholder floor_open');
     const p = ph || buildPlaceholder();
-    templates.floor_open = p.templates.floor_open;
-    return finish(templates, collectSpots(templates.floor_open), p.nightMaps, 'placeholder');
+    floor = templates.floor_open = p.templates.floor_open;
+    night = p.nightMaps;
+    source = 'placeholder';
+    installIdleMarkers(floor);
+    spots = collectSpots(floor);
   }
-  return finish(templates, spots, ph ? ph.nightMaps : new Map(), glb ? (missing.length ? 'glb+placeholder' : 'glb') : 'placeholder');
+  return finish(templates, spots, night, source);
 }
 
 function finish(templates, spots, nightMaps, source) {
@@ -81,20 +89,143 @@ export function bakedName(o) {
 
 // Spots in the local space of the floor_open node.
 function collectSpots(root) {
-  const spots = { desks: [], screens: [], lounges: [], lamps: [] };
+  const spots = { desks: [], screens: [], lounges: [], lamps: [], idle: emptyIdle() };
   root.updateMatrixWorld(true);
   const inv = new THREE.Matrix4().copy(root.matrixWorld).invert();
   const m = new THREE.Matrix4(), pos = new THREE.Vector3(), quat = new THREE.Quaternion(), sc = new THREE.Vector3(), fwd = new THREE.Vector3();
   root.traverse((o) => {
-    const s = SPOT_RE.exec(o.name), l = LAMP_RE.exec(o.name);
-    if (!s && !l) return;
+    const s = SPOT_RE.exec(o.name), l = LAMP_RE.exec(o.name), idle = IDLE_RE.exec(o.name);
+    if (!s && !l && !idle) return;
     m.multiplyMatrices(inv, o.matrixWorld).decompose(pos, quat, sc);
     if (l) { spots.lamps[Number(l[1]) - 1] = pos.clone(); return; }
     fwd.set(0, 0, 1).applyQuaternion(quat);
-    const spot = { pos: pos.clone(), yaw: Math.atan2(fwd.x, fwd.z) };
+    const yaw = Math.atan2(fwd.x, fwd.z);
+    if (idle) {
+      const kind = idle[1];
+      spots.idle[kind][Number(idle[2]) - 1] = { pos: pos.clone(), yaw, kind, id: `${kind}:${Number(idle[2])}` };
+      return;
+    }
+    const spot = { pos: pos.clone(), yaw };
     (s[1] === 'desk' ? spots.desks : s[1] === 'screen' ? spots.screens : spots.lounges)[Number(s[2]) - 1] = spot;
   });
+  for (const k of ['path', 'window', 'wall', 'coffee', 'corridor', 'stretch']) spots.idle[k] = spots.idle[k].filter(Boolean);
+  linkLoungeSeats(spots);
   return spots;
+}
+
+function emptyIdle() {
+  return { path: [], window: [], wall: [], coffee: [], corridor: [], stretch: [], sofas: [] };
+}
+
+// Sofa / armchair seats become idle "sofa" spots. The tallest lounge seat is the bar stool
+// (or, if they are all one height, the one nearest the glass) and counts as a coffee perch.
+function linkLoungeSeats(spots) {
+  const seats = spots.lounges.filter(Boolean);
+  if (!seats.length) return;
+  const ys = seats.map((s) => s.pos.y);
+  const spread = Math.max(...ys) - Math.min(...ys);
+  let stool = seats[0];
+  if (spread >= 0.08) { for (const s of seats) if (s.pos.y > stool.pos.y) stool = s; }
+  else { for (const s of seats) if (s.pos.z < stool.pos.z) stool = s; }
+  let n = 0;
+  for (const s of seats) {
+    if (s === stool) continue;
+    s.kind = 'sofa'; s.seat = true; s.id = `sofa:${n++}`;
+    spots.idle.sofas.push(s);
+  }
+  stool.kind = 'coffee'; stool.seat = true; stool.id = 'coffee:stool';
+  spots.idle.coffee.push(stool);
+}
+
+// =====================================================================================
+// Idle markers. The GLB has no idle empties, so they are stamped on in the floor's local
+// space, next to the real furniture (lounge on the right, glass at z = -6, desks on the left).
+// Placeholder furniture sits a little differently; it gets its own set. Names:
+//   idle_path_NN, idle_window_NN, idle_wall_NN, idle_coffee_NN, idle_corridor_NN, idle_stretch_NN
+// A small bookshelf is added beside the lounge so "lean" has something to lean on.
+// =====================================================================================
+
+const IDLE_LAYOUTS = {
+  glb: {
+    shelf: [7.15, 5.15, 0],
+    // Oval on the open floor in front of the lounge. The gap beside the armchairs is too narrow to walk.
+    path: [[-4.8, 4.50], [-1.2, 4.48], [2.0, 4.52], [4.5, 4.55], [6.05, 4.60], [4.3, 5.22], [1.4, 5.32], [-1.6, 5.28], [-4.6, 5.08]],
+    window: [[-6.9, -5.28, Math.PI], [-4.3, -5.28, Math.PI], [-1.6, -5.28, Math.PI], [0.9, -5.28, Math.PI], [7.35, -5.22, Math.PI]],
+    wall: [[-7.52, -1.50, Math.PI / 2], [-7.52, 3.30, Math.PI / 2], [7.15, 5.68, Math.PI]],
+    coffee: [[3.50, -3.30, Math.PI], [5.45, -3.30, Math.PI], [6.70, -3.30, Math.PI]],
+    // Between the two communal tables, then a step toward the lounge at the open end.
+    corridor: [[-6.2, -0.60], [-3.6, -0.62], [-1.0, -0.58], [1.5, -0.60], [2.70, -0.50], [2.70, 1.35]],
+    stretch: [[-4.2, 3.38, Math.PI / 5], [0.2, 3.38, Math.PI / 5], [5.35, 3.40, Math.PI / 6], [7.55, -3.70, Math.PI]],
+  },
+  placeholder: {
+    shelf: [6.5, 4.55, Math.PI],
+    path: [[3.4, 0.15], [3.4, 1.5], [3.5, 3.45], [5.9, 3.65], [7.05, 3.3], [7.15, 0.35], [5.9, -0.55], [3.5, -0.35]],
+    window: [[-6.6, -5.15, Math.PI], [-4.0, -5.15, Math.PI], [-1.4, -5.15, Math.PI], [1.1, -5.15, Math.PI]],
+    wall: [[-7.5, -2.2, Math.PI / 2], [-7.5, 3.15, Math.PI / 2], [6.5, 3.95, 0]],
+    coffee: [[5.0, -4.05, Math.PI], [7.0, -4.05, Math.PI]],
+    corridor: [[-5.5, 4.45], [-2.0, 4.5], [1.2, 4.5], [3.15, 3.15], [3.25, -1.15], [3.15, -3.35]],
+    stretch: [[-3.6, 3.4, 0.7], [0.3, 3.4, 0.7], [4.7, 3.25, 0.8], [7.15, -2.7, Math.PI]],
+  },
+};
+
+function installIdleMarkers(root) {
+  const lounge = root.getObjectByName('lounge_01');
+  const layout = IDLE_LAYOUTS[(lounge && lounge.position.z > 0.4) ? 'glb' : 'placeholder'];
+  const put = (kind, pts) => {
+    pts.forEach((p, i) => {
+      const name = `idle_${kind}_${String(i + 1).padStart(2, '0')}`;
+      if (root.getObjectByName(name)) return;
+      const next = pts[(i + 1) % pts.length];
+      const yaw = p.length > 2 ? p[2] : Math.atan2(next[0] - p[0], next[1] - p[1]);
+      empty(root, name, p[0], 0, p[1], yaw);
+    });
+  };
+  put('path', layout.path);
+  put('window', layout.window);
+  put('wall', layout.wall);
+  put('coffee', layout.coffee);
+  put('stretch', layout.stretch);
+  put('corridor', pingpong(layout.corridor));
+  if (!root.getObjectByName('bookshelf')) addBookshelf(root, layout.shelf[0], layout.shelf[1], layout.shelf[2]);
+}
+
+// Out and back, so the last point walks back to the first instead of cutting through the desks.
+function pingpong(pts) {
+  if (pts.length < 3) return pts.slice();
+  return pts.concat(pts.slice(1, -1).reverse());
+}
+
+const BOOK_COLORS = [0x355C8A, 0xC44B45, 0x2E6B4A, 0xE2B15C, 0x6D4C86, 0x8D5A3A, 0xD7D3CB, 0x3E7D8C];
+
+function addBookshelf(parent, x, z, yaw) {
+  const oak = stdMat(0xC9A57C, 0.62, 0, 'bookshelf_wood');
+  const books = BOOK_COLORS.map((c) => stdMat(c, 0.72, 0, 'bookshelf_book'));
+  const g = new THREE.Group();
+  g.name = 'bookshelf';
+  g.position.set(x, 0, z);
+  g.rotation.y = yaw;
+  const W = 1.16, H = 1.52, D = 0.3;
+  addBox(g, oak, 0.05, H, D, -W / 2 + 0.025, H / 2, 0);
+  addBox(g, oak, 0.05, H, D, W / 2 - 0.025, H / 2, 0);
+  addBox(g, oak, W - 0.08, H - 0.08, 0.02, 0, H / 2, -D / 2 + 0.02);
+  addBox(g, oak, W, 0.05, D, 0, 0.03, 0);
+  addBox(g, oak, W, 0.04, D, 0, H - 0.02, 0);
+  const rows = 4;
+  for (let r = 0; r < rows; r++) {
+    const y = 0.22 + r * 0.32;
+    addBox(g, oak, W - 0.1, 0.03, D - 0.05, 0, y, 0.01);
+    let bx = -W / 2 + 0.1;
+    let n = 0;
+    while (bx < W / 2 - 0.12) {
+      const bh = 0.2 + ((r + n) % 3) * 0.025;
+      const bw = 0.05 + (n % 2) * 0.012;
+      addBox(g, books[(r * 3 + n) % books.length], bw, bh, D - 0.09, bx, y + 0.015 + bh / 2, 0.02);
+      bx += bw + 0.01;
+      n++;
+    }
+  }
+  parent.add(g);
+  return g;
 }
 
 // =====================================================================================
