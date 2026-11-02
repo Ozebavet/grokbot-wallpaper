@@ -12,6 +12,7 @@ import { studioCss } from './studio.js';
 import { Actor } from './actor.js';
 import { resolveIdleConfig } from './idle-config.js';
 import { createIdleDirector } from './idle.js';
+import { createChats } from './chat.js';
 import { generateBlob } from './blobgen.js';
 import { Spring, clamp } from './spring.js';
 import { sofiaHour, fontsPromise } from './walls.js';
@@ -33,6 +34,7 @@ const DESK_ORDER = [1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 2, 4, 6, 8, 10, 12, 14, 1
 let renderer, labels, camera, scene, container, callbacks, daylight, building, post;
 let assets = null;
 const idleConfig = resolveIdleConfig(location.search);
+const chats = createChats(idleConfig);
 let idleDirector = null;
 let lastState = null, lastView = { currentFloor: null, selectedBot: null };
 const actors = new Map();
@@ -223,7 +225,9 @@ function settle(seconds = 3) {
     nowSec += step;
     stepCamera(step);
     building.update(step, performance.now());
-    for (const a of actors.values()) { a.hostAlpha = building.activeOpen()?.alpha ?? 1; a.tick(step, nowSec); }
+    for (const a of actors.values()) a.hostAlpha = building.activeOpen()?.alpha ?? 1;
+    chats.tick(actors, nowSec);
+    for (const a of actors.values()) a.tick(step, nowSec);
     for (const a of retiring) { a.tick(step, nowSec); if (a.dead) retiring.delete(a); }
   }
 }
@@ -635,7 +639,9 @@ function frame(t) {
   updateCursorGround();
 
   const hostAlpha = building?.activeOpen()?.alpha ?? 1;
-  for (const a of actors.values()) { a.hostAlpha = hostAlpha; a.tick(dt, nowSec); }
+  for (const a of actors.values()) a.hostAlpha = hostAlpha;
+  chats.tick(actors, nowSec);
+  for (const a of actors.values()) a.tick(dt, nowSec);
   for (const a of retiring) {
     a.hostAlpha = a.ctx.inst.alpha;
     a.tick(dt, nowSec);

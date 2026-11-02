@@ -80,6 +80,20 @@ export class Actor {
     this.tag.visible = false;
     this.pivot.add(this.tag);
 
+    this.chatEl = document.createElement('div');
+    this.chatEl.className = 'hq-chat';
+    this.chatEl.innerHTML = '<div class="hq-chat-bubble"><span class="hq-chat-text"></span></div>';
+    this.chatBubble = this.chatEl.querySelector('.hq-chat-bubble');
+    this.chatSpan = this.chatEl.querySelector('.hq-chat-text');
+    this.chat = new CSS2DObject(this.chatEl);
+    this.chat.center.set(0.5, 1);
+    this.chat.position.y = MODEL_HEIGHT + 0.62;
+    this.chat.visible = false;
+    this.root.add(this.chat);
+    this.chatFace = null;
+    this.chatSide = 0;
+    this.chatShown = '';
+
     this.setPlaceholderModel(bot.color);
     ctx.parent.add(this.root);
   }
@@ -209,6 +223,20 @@ export class Actor {
     for (const o of this.pickMeshes || []) this.ctx.pickables.delete(o);
     this.tagEl.dataset.mode = 'off';
     this.tag.visible = false;
+    this.setChat(null, null, 0);
+  }
+
+  // text null fades the bubble out. faceYaw is an absolute heading toward the partner; side is -1 or 1
+  // so the two bubbles sit on opposite sides and do not cover each other.
+  setChat(text, faceYaw, side) {
+    this.chatFace = faceYaw == null ? null : faceYaw;
+    this.chatSide = side || 0;
+    const next = text || '';
+    const on = !!next;
+    if (next === this.chatShown && this.chatBubble.classList.contains('is-on') === on) return;
+    this.chatShown = next;
+    if (next) this.chatSpan.textContent = next;
+    this.chatBubble.classList.toggle('is-on', on);
   }
 
   // ---------- motion ----------
@@ -530,7 +558,8 @@ export class Actor {
       const seated = (!this.spotIsLounge() && s !== 'idle') || (this.driveIdle && !!this.spot?.seat);
       const lim = seated ? 0.8 : 1.9;                               // seated bots never leave the desk
       target = base + clamp(angleDiff(lookYaw, base), -lim, lim) * w;
-    } else if (this.idleGaze) target = base + this.idleGaze.yaw;
+    } else if (this.chatFace != null) target = this.chatFace;
+    else if (this.idleGaze) target = base + this.idleGaze.yaw;
     this.yawS.target = this.yawS.x + angleDiff(target, this.yawS.x);
     this.yawS.step(dt);
 
@@ -562,6 +591,9 @@ export class Actor {
 
     // tag follows the host floor: hidden while that floor is faded / lifted
     this.tag.visible = this.tagEl.dataset.mode !== 'off' && this.hostAlpha > 0.5 && !this.retiring && this.scaleS.x > 0.6;     // no tag before the blob has dropped in
+    const chatting = this.chatBubble.classList.contains('is-on') || !!this.chatSpan.textContent;
+    this.chat.visible = chatting && this.hostAlpha > 0.5 && !this.retiring && this.scaleS.x > 0.6 && this.status === 'idle';
+    this.chat.position.set(this.chatSide * 0.46, this.tag.position.y + (this.tag.visible ? 0.46 : 0.08), 0);
 
     this.tickEyes(dt);
     if (this.retiring && this.scaleS.x < 0.03) { this.dead = true; this.dispose(); }
@@ -597,6 +629,7 @@ export class Actor {
     this.endCelebration();
     for (const o of this.pickMeshes || []) this.ctx.pickables.delete(o);
     this.tagEl.remove();
+    this.chatEl?.remove();
     this.root.removeFromParent();
   }
 }

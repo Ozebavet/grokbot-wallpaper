@@ -18,16 +18,19 @@ export function mulberry32(seed) {
   };
 }
 
+const SOCIAL = new Set(['sofa', 'coffee', 'window', 'lean']);
+
 export function createIdleDirector(idleSpots, config) {
   const claims = new Map();
   const byBot = new Map();
+  const places = new Map();
   return {
     config,
     spots: idleSpots || emptySpots(),
     enabled: idleActivitiesEnabled(config),
     blocked: () => false,
     heldBy(key) { return claims.get(key) || null; },
-    claim(botId, key) {
+    claim(botId, key, pos) {
       if (!key) return false;
       const owner = claims.get(key);
       if (owner && owner !== botId) return false;
@@ -35,12 +38,30 @@ export function createIdleDirector(idleSpots, config) {
       if (prev && prev !== key && claims.get(prev) === botId) claims.delete(prev);
       claims.set(key, botId);
       byBot.set(botId, key);
+      if (pos) places.set(botId, { x: pos.x, z: pos.z });
+      else places.delete(botId);
       return true;
     },
     release(botId) {
       const prev = byBot.get(botId);
       if (prev && claims.get(prev) === botId) claims.delete(prev);
       byBot.delete(botId);
+      places.delete(botId);
+    },
+    // 2 when another idle bot is already settled within chat range, -1 when this spot is too close, else 0.
+    hasCompany() { return places.size > 0; },
+    nearCompany(pos, selfId) {
+      const sep = config.separation || 0.9;
+      const range = config.chat?.range ?? 2.7;
+      let best = Infinity;
+      for (const [id, p] of places) {
+        if (id === selfId || !p) continue;
+        const d = Math.hypot(pos.x - p.x, pos.z - p.z);
+        if (d < best) best = d;
+      }
+      if (!Number.isFinite(best)) return 0;
+      if (best < sep) return -1;
+      return best <= range ? 2 : 0;
     },
     count(prefix) {
       const p = `${prefix}:`;
@@ -78,6 +99,7 @@ function weightOf(kind, actor, director) {
   const spec = cfg.activities[kind];
   let w = spec.weight;
   if (kind === actor.favorite) w *= cfg.favoriteBoost || 1;
+  if (cfg.chat?.enabled && SOCIAL.has(kind)) w *= cfg.chat.gather || 1;
   const text = `${actor.name || ''} ${actor.group || ''} ${actor.id || ''}`;
   for (const b of cfg.roleBias || []) {
     if (b.activity === kind && b.match.test(text)) w *= b.mul;
@@ -118,22 +140,69 @@ function reserveRoute(kind, actor, director, rng) {
   if (!free.length) return null;
   const lane = free[Math.floor(rng() * free.length)];
   const key = `${kind}:${lane}`;
-  if (!director.claim(actor.id, key)) return null;
   const index = (Math.floor((path.length * lane) / lanes) + Math.floor(rng() * 2)) % path.length;
+  if (!director.claim(actor.id, key)) return null;
   return { kind, key, path, index, spot: path[index], speed: kind === 'wander' ? 0.62 : 1.02 };
 }
 
 function reservePoint(kind, actor, director, rng) {
   const list = listFor(director, kind);
   const sep = director.config.separation || 0.9;
+  const social = !!(director.config.chat?.enabled && SOCIAL.has(kind));
+  const candidates = [];
   for (const i of shuffle(list.length, rng)) {
     const spot = list[i];
     const key = spot.id || `${kind}:${i}`;
     const owner = director.heldBy(key);
     if (owner && owner !== actor.id) continue;
     if (director.blocked(spot.pos, sep, actor.id)) continue;
-    if (!director.claim(actor.id, key)) continue;
-    return { kind, key, spot, speed: 0.85 };
+    const company = social ? director.nearCompany(spot.pos, actor.id) : 0;
+    if (company < 0) continue;
+    candidates.push({ spot, key, company });
+  }
+  if (!candidates.length) return null;
+  const best = candidates.reduce((m, c) => Math.max(m, c.company), 0);
+  const top = candidates.filter((c) => c.company === best);
+  const pick = top[Math.floor(rng() * top.length)];
+  if (!director.claim(actor.id, pick.key, social ? pick.spot.pos : null)) return null;
+  return { kind, key: pick.key, spot: pick.spot, speed: 0.85 };
+}
+
+function openSocial(kind, actor, director) {
+  const list = listFor(director, kind);
+  const sep = director.config.separation || 0.9;
+  const out = [];
+  for (let i = 0; i < list.length; i++) {
+    const spot = list[i];
+    const key = spot.id || `${kind}:${i}`;
+    const owner = director.heldBy(key);
+    if (owner && owner !== actor.id) continue;
+    if (director.blocked(spot.pos, sep, actor.id)) continue;
+    out.push({ kind, key, spot, company: director.nearCompany(spot.pos, actor.id) });
+  }
+  return out.filter((s) => s.company >= 0);
+}
+
+// Sit or stand next to an idle bot who is already at a sofa, the coffee bar, or a window.
+function tryJoin(actor, director, rng) {
+  const pool = [];
+  for (const kind of ['sofa', 'coffee', 'window', 'lean']) {
+    if (!usableKinds(director).includes(kind)) continue;
+    for (const spot of openSocial(kind, actor, director)) if (spot.company > 0) pool.push(spot);
+  }
+  if (!pool.length) return null;
+  const pick = pool[Math.floor(rng() * pool.length)];
+  if (!director.claim(actor.id, pick.key, pick.spot.pos)) return null;
+  return { kind: pick.kind, key: pick.key, spot: pick.spot, speed: 0.85 };
+}
+
+// The first idle bot picks a place other people can walk up to.
+function hostGathering(actor, director, rng) {
+  const order = rng() < 0.6 ? ['sofa', 'coffee', 'window', 'lean'] : ['coffee', 'window', 'sofa', 'lean'];
+  for (const kind of order) {
+    if (!usableKinds(director).includes(kind)) continue;
+    const choice = reservePoint(kind, actor, director, rng);
+    if (choice) return choice;
   }
   return null;
 }
@@ -141,6 +210,10 @@ function reservePoint(kind, actor, director, rng) {
 // actor: { id, name, group, favorite }. previous: last activity kind, or null.
 // Returns { kind, key, spot, path?, index?, speed } or null when nothing is free.
 export function chooseIdleActivity(actor, director, rng, previous) {
+  if (director.config.chat?.enabled && rng() < (director.hasCompany() ? 0.84 : 0.72)) {
+    const grouped = director.hasCompany() ? tryJoin(actor, director, rng) : hostGathering(actor, director, rng);
+    if (grouped) return grouped;
+  }
   const kinds = usableKinds(director);
   if (!kinds.length) return null;
   const weights = kinds.map((k) => weightOf(k, actor, director));

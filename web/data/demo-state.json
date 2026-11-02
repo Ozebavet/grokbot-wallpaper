@@ -19,92 +19,44 @@
  },
  "floors": [
   {
-   "id": "coordination",
-   "name": "Coordination",
+   "id": "office",
+   "name": "Office",
    "order": 1,
    "bots": [
-    "grok-bot",
-    "jevopus"
-   ],
-   "counts": {
-    "working": 1,
-    "idle": 1,
-    "waiting_user": 0,
-    "error": 0,
-    "stuck": 0,
-    "done": 0
-   },
-   "free_desks": 18
-  },
-  {
-   "id": "x-content",
-   "name": "X content",
-   "order": 2,
-   "bots": [
-    "x-writer",
-    "banner-visuals",
     "analytics-analyst",
-    "competitor-watch",
-    "qt-scout",
-    "ideas-sparring",
+    "banner-visuals",
     "bookmarks-brain",
     "codila-x-researcher",
-    "trendy-x"
+    "competitor-watch",
+    "finance-team",
+    "grok-bot",
+    "ideas-sparring",
+    "jevopus",
+    "qt-scout",
+    "substack",
+    "trendy-x",
+    "warren-buffett",
+    "x-ads-manager",
+    "x-writer"
    ],
    "counts": {
-    "working": 4,
-    "idle": 1,
-    "waiting_user": 1,
+    "working": 6,
+    "idle": 4,
+    "waiting_user": 2,
     "error": 1,
     "stuck": 1,
     "done": 1
    },
-   "free_desks": 11
-  },
-  {
-   "id": "publishing",
-   "name": "Publishing",
-   "order": 3,
-   "bots": [
-    "substack",
-    "x-ads-manager"
-   ],
-   "counts": {
-    "working": 0,
-    "idle": 1,
-    "waiting_user": 1,
-    "error": 0,
-    "stuck": 0,
-    "done": 0
-   },
-   "free_desks": 18
-  },
-  {
-   "id": "finance",
-   "name": "Finance",
-   "order": 4,
-   "bots": [
-    "warren-buffett",
-    "finance-team"
-   ],
-   "counts": {
-    "working": 1,
-    "idle": 1,
-    "waiting_user": 0,
-    "error": 0,
-    "stuck": 0,
-    "done": 0
-   },
-   "free_desks": 18
+   "free_desks": 5
   }
  ],
  "bots": {
   "grok-bot": {
    "id": "grok-bot",
    "name": "Grok Bot",
-   "floor": "coordination",
-   "desk": 1,
-   "group": "Coordination",
+   "floor": "office",
+   "desk": 7,
+   "group": "Office",
    "status": "working",
    "effective_status": "working",
    "step": "R4: scanning X, 7 searches",
@@ -178,9 +130,9 @@
   "jevopus": {
    "id": "jevopus",
    "name": "Jevopus",
-   "floor": "coordination",
-   "desk": 2,
-   "group": "Coordination",
+   "floor": "office",
+   "desk": 9,
+   "group": "Office",
    "status": "idle",
    "effective_status": "idle",
    "step": "file ready, waiting for a new task",
@@ -254,9 +206,9 @@
   "x-writer": {
    "id": "x-writer",
    "name": "X Writer",
-   "floor": "x-content",
-   "desk": 1,
-   "group": "X content",
+   "floor": "office",
+   "desk": 15,
+   "group": "Office",
    "status": "working",
    "effective_status": "working",
    "step": "drafting a post about Topaz",
@@ -330,9 +282,9 @@
   "banner-visuals": {
    "id": "banner-visuals",
    "name": "Banner & Visuals",
-   "floor": "x-content",
+   "floor": "office",
    "desk": 2,
-   "group": "X content",
+   "group": "Office",
    "status": "working",
    "effective_status": "working",
    "step": "drawing a 1500×500 banner, version 3",
@@ -406,9 +358,9 @@
   "analytics-analyst": {
    "id": "analytics-analyst",
    "name": "Analytics Analyst",
-   "floor": "x-content",
-   "desk": 3,
-   "group": "X content",
+   "floor": "office",
+   "desk": 1,
+   "group": "Office",
    "status": "error",
    "effective_status": "error",
    "step": "X rate limit 429, retrying in 15 min",
@@ -482,9 +434,9 @@
   "competitor-watch": {
    "id": "competitor-watch",
    "name": "Competitor Watch",
-   "floor": "x-content",
-   "desk": 4,
-   "group": "X content",
+   "floor": "office",
+   "desk": 5,
+   "group": "Office",
    "status": "done",
    "effective_status": "done",
    "step": "report on 12 competitors is ready",
@@ -558,9 +510,9 @@
   "qt-scout": {
    "id": "qt-scout",
    "name": "QT Scout",
-   "floor": "x-content",
-   "desk": 5,
-   "group": "X content",
+   "floor": "office",
+   "desk": 10,
+   "group": "Office",
    "status": "working",
    "effective_status": "stuck",
    "step": "next run at 15:15 Kyiv time",
@@ -634,9 +586,9 @@
   "ideas-sparring": {
    "id": "ideas-sparring",
    "name": "Ideas Sparring",
-   "floor": "x-content",
-   "desk": 6,
-   "group": "X content",
+   "floor": "office",
+   "desk": 8,
+   "group": "Office",
    "status": "idle",
    "effective_status": "idle",
    "step": "Friday brainstorm done: 20 ideas",
@@ -710,9 +662,9 @@
   "bookmarks-brain": {
    "id": "bookmarks-brain",
    "name": "Bookmarks Brain",
-   "floor": "x-content",
-   "desk": 7,
-   "group": "X content",
+   "floor": "office",
+   "desk": 3,
+   "group": "Office",
    "status": "working",
    "effective_status": "working",
    "step": "sorting 17 new bookmarks",
@@ -786,9 +738,9 @@
   "codila-x-researcher": {
    "id": "codila-x-researcher",
    "name": "Codila X Researcher",
-   "floor": "x-content",
-   "desk": 8,
-   "group": "X content",
+   "floor": "office",
+   "desk": 4,
+   "group": "Office",
    "status": "waiting_user",
    "effective_status": "waiting_user",
    "step": "which thread do we pick?",
@@ -862,9 +814,9 @@
   "trendy-x": {
    "id": "trendy-x",
    "name": "Trendy X",
-   "floor": "x-content",
-   "desk": 9,
-   "group": "X content",
+   "floor": "office",
+   "desk": 12,
+   "group": "Office",
    "status": "working",
    "effective_status": "working",
    "step": "measuring reach of 40 posts",
@@ -938,9 +890,9 @@
   "substack": {
    "id": "substack",
    "name": "Substack",
-   "floor": "publishing",
-   "desk": 1,
-   "group": "Publishing",
+   "floor": "office",
+   "desk": 11,
+   "group": "Office",
    "status": "idle",
    "effective_status": "idle",
    "step": "note on the GrokBot course published",
@@ -1014,9 +966,9 @@
   "x-ads-manager": {
    "id": "x-ads-manager",
    "name": "X Ads Manager",
-   "floor": "publishing",
-   "desk": 2,
-   "group": "Publishing",
+   "floor": "office",
+   "desk": 14,
+   "group": "Office",
    "status": "waiting_user",
    "effective_status": "waiting_user",
    "step": "approve the $40 budget?",
@@ -1090,9 +1042,9 @@
   "warren-buffett": {
    "id": "warren-buffett",
    "name": "Warren Buffett",
-   "floor": "finance",
-   "desk": 1,
-   "group": "Finance",
+   "floor": "office",
+   "desk": 13,
+   "group": "Office",
    "status": "idle",
    "effective_status": "idle",
    "step": "paused, not running anything",
@@ -1166,9 +1118,9 @@
   "finance-team": {
    "id": "finance-team",
    "name": "Finance Team",
-   "floor": "finance",
-   "desk": 2,
-   "group": "Finance",
+   "floor": "office",
+   "desk": 6,
+   "group": "Office",
    "status": "working",
    "effective_status": "working",
    "step": "reconciling October expenses",
