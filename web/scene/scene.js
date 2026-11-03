@@ -195,7 +195,7 @@ function sync() {
     const deskIdx = (DESK_ORDER[(bot.desk || 1) - 1] || 1) - 1;
     const desk = assets.spots.desks[deskIdx] || assets.spots.desks[0];
     if ((bot.effective_status || bot.status) === 'working' && !lounge.has(bot.id)) flags[deskIdx] = 1;
-    actor.update(bot, lounge.get(bot.id) || desk, { maxShare, selectedBot: view.selectedBot, idle: idleView });
+    actor.update(bot, lounge.get(bot.id) || desk, { maxShare, selectedBot: view.selectedBot, idle: idleView, boss: idleConfig.boss, drag: idleConfig.drag });
   }
   building.setScreens(flags);
   const floor = floors.find((f) => f.id === building.activeId);
@@ -225,7 +225,8 @@ function settle(seconds = 3) {
     nowSec += step;
     stepCamera(step);
     building.update(step, performance.now());
-    for (const a of actors.values()) a.hostAlpha = building.activeOpen()?.alpha ?? 1;
+    const crew = [...actors.values()];
+    for (const a of crew) { a.hostAlpha = building.activeOpen()?.alpha ?? 1; if (a.bossOn) a.crew = crew; }
     chats.tick(actors, nowSec);
     for (const a of actors.values()) a.tick(step, nowSec);
     for (const a of retiring) { a.tick(step, nowSec); if (a.dead) retiring.delete(a); }
@@ -379,7 +380,11 @@ function addPointerHandlers() {
   if (WALLPAPER) return;                              // a desktop background: bots follow the cursor, nothing else
   el.addEventListener('pointerdown', onDown);
   el.addEventListener('pointerup', onUp);
-  el.addEventListener('pointercancel', (e) => { touches.delete(e.pointerId); drag = null; pinch = null; });
+  el.addEventListener('pointercancel', (e) => {
+    touches.delete(e.pointerId);
+    if (drag?.carrying) actors.get(drag.carryId)?.dropHold();
+    drag = null; pinch = null;
+  });
   el.addEventListener('wheel', onWheel, { passive: false });
   el.addEventListener('contextmenu', (e) => e.preventDefault());
 }
@@ -389,6 +394,13 @@ function setPointer(e) {
   pointer.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
 }
 
+function groundAtPointer() {
+  if (!building) return null;
+  raycaster.setFromCamera(pointer, camera);
+  groundPlane.constant = -(building.activeY || 0);
+  return raycaster.ray.intersectPlane(groundPlane, tmp) ? { x: clamp(tmp.x, -7.4, 7.4), z: clamp(tmp.z, -5.2, 5.3) } : null;
+}
+
 function onDown(e) {
   renderer.domElement.setPointerCapture?.(e.pointerId);
   setPointer(e);
@@ -396,10 +408,12 @@ function onDown(e) {
   if (touches.size === 2) {
     const [a, b] = [...touches.values()];
     pinch = { d: Math.hypot(a.x - b.x, a.y - b.y), z: cam.zoom.target };
+    if (drag?.carrying) actors.get(drag.carryId)?.dropHold();
     drag = null;
     return;
   }
-  drag = { id: e.pointerId, x0: e.clientX, y0: e.clientY, lx: e.clientX, ly: e.clientY, lt: performance.now(), panning: false, vx: 0, vz: 0 };
+  const hit = idleConfig.drag?.enabled === false ? null : pick();
+  drag = { id: e.pointerId, x0: e.clientX, y0: e.clientY, lx: e.clientX, ly: e.clientY, lt: performance.now(), panning: false, carrying: false, carryId: hit, vx: 0, vz: 0 };
 }
 
 function onMove(e) {
@@ -413,7 +427,16 @@ function onMove(e) {
     return;
   }
   if (!drag || drag.id !== e.pointerId) return;
-  if (!drag.panning && Math.hypot(e.clientX - drag.x0, e.clientY - drag.y0) > 5) drag.panning = true;
+  const moved = Math.hypot(e.clientX - drag.x0, e.clientY - drag.y0) > 6;
+  if (!drag.panning && !drag.carrying && moved) {
+    if (drag.carryId && actors.has(drag.carryId)) drag.carrying = true;
+    else drag.panning = true;
+  }
+  if (drag.carrying) {
+    const g = groundAtPointer();
+    if (g) actors.get(drag.carryId)?.grab(g.x, g.z);
+    return;
+  }
   if (!drag.panning) return;
   const now = performance.now();
   const dx = e.clientX - drag.lx, dy = e.clientY - drag.ly;
@@ -435,6 +458,7 @@ function onUp(e) {
   if (!drag || drag.id !== e.pointerId) return;
   const d = drag;
   drag = null;
+  if (d.carrying) { actors.get(d.carryId)?.dropHold(); return; }
   if (d.panning) {                                   // let it glide a little, then settle
     const vx = clamp(d.vx, -30, 30), vz = clamp(d.vz, -30, 30);
     cam.x.v = vx; cam.z.v = vz;
@@ -641,6 +665,8 @@ function frame(t) {
   const hostAlpha = building?.activeOpen()?.alpha ?? 1;
   for (const a of actors.values()) a.hostAlpha = hostAlpha;
   chats.tick(actors, nowSec);
+  const crew = [...actors.values()];
+  for (const a of crew) if (a.bossOn) a.crew = crew;
   for (const a of actors.values()) a.tick(dt, nowSec);
   for (const a of retiring) {
     a.hostAlpha = a.ctx.inst.alpha;

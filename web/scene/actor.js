@@ -4,6 +4,7 @@
 import * as THREE from 'three';
 import { CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
 import { Spring, REDUCED, clamp, smoothstep } from './spring.js';
+import { bossLine } from './idle-config.js';
 import { chooseIdleActivity, mulberry32, enabledActivityList, planIdleRoute } from './idle.js';
 
 export const STATUS_COLOR = {
@@ -166,6 +167,23 @@ export class Actor {
     this.selected = view.selectedBot === bot.id;
     this.renderTag();
 
+    const bossCfg = view?.boss;
+    const isBoss = !!(bossCfg?.enabled && (bot.name || '').trim().toLowerCase() === String(bossCfg.name || '').trim().toLowerCase());
+    this.bossOn = isBoss && status !== 'error';
+    this.bossCfg = bossCfg;
+    this.dragLines = view?.drag?.enabled === false ? null : (view?.drag?.surprise || ['咦？', '哇！']);
+    if (this.held || this.landing) {
+      // carried or still bouncing: keep the status colour, don't pull them back to a spot
+    } else if (this.bossOn) {
+      if (this.driveIdle) this.endIdle();
+      if (!this.spot) {
+        const start = { pos: spot.pos.clone(), yaw: spot.yaw || 0 };
+        start.pos.x = clamp(start.pos.x + 1.4, -7, 7);
+        this.dropIn(start);
+        this.spot = start;
+        this.bossPhase = 'go';
+      }
+    } else {
     const idleOn = status === 'idle' && !!view?.idle?.enabled;
     if (idleOn) {
       this.idleCtrl = view.idle;
@@ -177,6 +195,7 @@ export class Actor {
         if (!this.spot) this.dropIn(spot); else this.travelTo(spot);
         this.spot = spot;
       }
+    }
     }
     this.ring.position.y = 0.012 - (this.spot ? this.spot.pos.y : 0);
 
@@ -210,7 +229,7 @@ export class Actor {
   setHovered(on) {
     if (this.hovered === on) return;
     this.hovered = on;
-    if (on && !this.anim) this.hop(0.2);
+    if (on && !this.anim && !this.held) this.hop(0.2);
     this.renderTag();
   }
 
@@ -479,9 +498,93 @@ export class Actor {
     }
   }
 
+  grab(x, z) {
+    this.held = true;
+    this.anim = null;
+    this.holdTarget = { x, z };
+    if (!this.surprised) {
+      const lines = (this.bossOn && this.bossCfg?.surprise) || this.dragLines || ['咦？', '哇！'];
+      this.setChat(lines[Math.floor(Math.random() * lines.length)], null, 0);
+      this.surprised = true;
+    }
+  }
+
+  dropHold() {
+    if (!this.held) return;
+    this.held = false;
+    this.surprised = false;
+    this.landing = { y: 0.55, t: 0 };
+    this.holdVx = 0;
+    this.holdVz = 0;
+    this.setChat(null, null, 0);
+    this.root.position.y = 0;
+    if (this.bossOn) { this.bossPhase = 'go'; this.bossPause = 0; }
+    else if (this.spot) this.strollTo(this.spot, 1.1);
+  }
+
+  tickBoss(dt) {
+    const moving = this.anim?.kind === 'stroll' || this.anim?.kind === 'travel' || this.anim?.kind === 'drop';
+    if (moving) return;
+    if (this.bossPhase === 'walk') {
+      this.bossPhase = 'watch';
+      const [min, max] = this.bossCfg?.stop || [2.2, 3.8];
+      this.bossPause = min + Math.random() * Math.max(0, max - min);
+      const who = this.bossArrive;
+      if (who?.root) {
+        const face = Math.atan2(who.root.position.x - this.root.position.x, who.root.position.z - this.root.position.z);
+        this.setChat(bossLine(who.bot?.name, this.bossCfg), face, who.root.position.x >= this.root.position.x ? -1 : 1);
+        const replies = this.bossCfg?.replies || ['是的老闆'];
+        who.bossHold = true;
+        const back = Math.atan2(this.root.position.x - who.root.position.x, this.root.position.z - who.root.position.z);
+        who.setChat(replies[Math.floor(Math.random() * replies.length)], back, 1);
+      }
+      return;
+    }
+    if (this.bossPhase === 'watch') {
+      this.bossPause -= dt;
+      if (this.bossPause > 0) return;
+      if (this.bossArrive) { this.bossArrive.bossHold = false; this.bossArrive.setChat(null, null, 0); this.bossArrive = null; }
+      this.setChat(null, null, 0);
+      this.bossPhase = 'go';
+    }
+    const crew = (this.crew || []).filter((a) => a !== this && a.root && !a.retiring);
+    const pool = crew.filter((a) => a.id !== this.bossLast);
+    const named = pool.filter((a) => this.bossCfg?.lines?.[a.bot?.name]);
+    const list = (named.length && Math.random() < 0.65 ? named : pool.length ? pool : crew);
+    if (!list.length) return;
+    const who = list[Math.floor(Math.random() * list.length)];
+    this.bossLast = who.id;
+    this.bossArrive = who;
+    const dx = this.root.position.x - who.root.position.x || 0.8;
+    const dz = this.root.position.z - who.root.position.z || 0.2;
+    const len = Math.hypot(dx, dz) || 1;
+    const stand = {
+      pos: new THREE.Vector3(
+        clamp(who.root.position.x + (dx / len) * 0.95, -7.3, 7.3),
+        0,
+        clamp(who.root.position.z + (dz / len) * 0.95, -5.1, 5.2),
+      ),
+      yaw: Math.atan2(-dx, -dz),
+    };
+    this.spot = stand;
+    this.bossPhase = 'walk';
+    this.strollTo(stand, this.bossCfg?.speed || 1.05);
+  }
+
   tick(dt, t) {
-    this.tickIdle(dt);
-    this.applyIdlePose();
+    if (this.held && this.holdTarget) {
+      const dx = this.holdTarget.x - this.root.position.x;
+      const dz = this.holdTarget.z - this.root.position.z;
+      this.holdVx = (this.holdVx || 0) + dx * 26 * dt;
+      this.holdVz = (this.holdVz || 0) + dz * 26 * dt;
+      const damp = Math.exp(-2.4 * dt);
+      this.holdVx *= damp;
+      this.holdVz *= damp;
+      this.root.position.x += this.holdVx * dt;
+      this.root.position.z += this.holdVz * dt;
+      this.dangle = clamp((this.holdVx || 0) * 0.14, -0.6, 0.6);
+    } else if (this.bossOn && !this.landing) this.tickBoss(dt);
+    if (!this.held) { this.tickIdle(dt); this.applyIdlePose(); }
     const p = this.pivot;
     const s = this.status;
     let y = 0, sx = 1, sy = 1, rx = 0, rz = 0, ox = 0;
@@ -531,7 +634,19 @@ export class Actor {
       }
     }
 
-    if (!this.anim && this.idleBody) {
+    if (this.held) { y = 0.55; rz = this.dangle || 0; sx = 1; sy = 1; }
+    else if (this.landing) {
+      this.landing.t += dt;
+      const k = this.landing.t / 0.48;
+      if (k >= 1) this.landing = null;
+      else if (k < 0.62) y = this.landing.y * (1 - (k / 0.62) ** 2);
+      else {
+        const q = (k - 0.62) / 0.38;
+        const a = Math.sin(q * Math.PI) * (1 - q);
+        sx = 1 + 0.18 * a; sy = 1 - 0.2 * a; y = 0;
+      }
+    }
+    if (!this.anim && this.idleBody && !this.held) {
       y += this.idleBody.y || 0;
       sx *= this.idleBody.sx || 1;
       sy *= this.idleBody.sy || 1;
@@ -548,7 +663,7 @@ export class Actor {
       if (dist < LOOK_RANGE) { w = smoothstep(LOOK_RANGE, LOOK_RANGE - 1.3, dist); lookYaw = Math.atan2(dx, dz); }
     }
     this.hopCooldown -= dt;
-    if (dist < HOP_RANGE && this.hopCooldown <= 0 && !this.anim && !REDUCED) { this.hop(0.26); this.hopCooldown = HOP_COOLDOWN; }
+    if (dist < HOP_RANGE && this.hopCooldown <= 0 && !this.anim && !this.held && !REDUCED) { this.hop(0.26); this.hopCooldown = HOP_COOLDOWN; }
 
     const moving = this.anim?.kind === 'travel' || this.anim?.kind === 'stroll';
     const base = (this.baseYaw || 0) + (moving ? 0 : RESTING_TURN);

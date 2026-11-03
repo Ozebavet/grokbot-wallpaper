@@ -3,13 +3,13 @@
  "now": "2026-10-31T17:00:00.000Z",
  "demo": true,
  "summary": {
-  "working": 6,
+  "working": 7,
   "idle": 4,
   "waiting_user": 2,
   "error": 1,
   "stuck": 1,
   "done": 1,
-  "total": 15
+  "total": 16
  },
  "usage": {
   "period": "week",
@@ -37,17 +37,18 @@
     "trendy-x",
     "warren-buffett",
     "x-ads-manager",
-    "x-writer"
+    "x-writer",
+    "big-boss"
    ],
    "counts": {
-    "working": 6,
+    "working": 7,
     "idle": 4,
     "waiting_user": 2,
     "error": 1,
     "stuck": 1,
     "done": 1
    },
-   "free_desks": 5
+   "free_desks": 4
   }
  ],
  "bots": {
@@ -1188,6 +1189,67 @@
      "t": "2026-10-31T16:18:00Z",
      "status": "working",
      "step": "writing the summary"
+    }
+   ]
+  },
+  "big-boss": {
+   "id": "big-boss",
+   "name": "BIG Boss",
+   "floor": "office",
+   "desk": 16,
+   "group": "Office",
+   "status": "working",
+   "effective_status": "working",
+   "step": "walking the floor",
+   "task": "Patrol",
+   "since": "2026-10-31T16:40:00Z",
+   "last_event": "2026-10-31T16:58:00Z",
+   "usage_pct": 1.5,
+   "usage_share": 0.04,
+   "chat_url": null,
+   "avatar": "big-boss",
+   "color": "#B8312F",
+   "look": {
+    "shape": "rounded_cube",
+    "color": "#B8312F",
+    "accessory": "antenna"
+   },
+   "today": {
+    "working_min": 10,
+    "events": 2,
+    "tasks_done": 0,
+    "hourly": [
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "history": [
+    {
+     "t": "2026-10-31T16:58:00Z",
+     "status": "working",
+     "step": "walking the floor"
     }
    ]
   }

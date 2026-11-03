@@ -27,8 +27,9 @@ export function createChats(config) {
     tick(actors, now) {
       const chat = config.chat || {};
       const show = new Map();
+      const quiet = (actor) => actor.bossOn || actor.bossHold || actor.held;
       if (!this.enabled) {
-        for (const actor of actors.values()) actor.setChat?.(null, null, 0);
+        for (const actor of actors.values()) if (!quiet(actor)) actor.setChat?.(null, null, 0);
         convos.clear();
         return;
       }
@@ -37,7 +38,7 @@ export function createChats(config) {
       const maxEx = chat.exchanges ?? 4;
       const [coolMin, coolMax] = chat.cooldown || [10, 20];
       const lines = chat.lines;
-      const idle = [...actors.values()].filter(canChat);
+      const idle = [...actors.values()].filter((a) => canChat(a) && !a.bossOn && !a.bossHold && !a.held);
 
       for (const [key, convo] of convos) {
         const a = actors.get(convo.ids[0]);
@@ -89,6 +90,7 @@ export function createChats(config) {
       }
 
       for (const actor of actors.values()) {
+        if (actor.bossOn || actor.bossHold || actor.held) continue;
         const turn = show.get(actor.id);
         if (!turn) { actor.setChat?.(null, null, 0); continue; }
         const face = Math.atan2(turn.other.root.position.x - actor.root.position.x, turn.other.root.position.z - actor.root.position.z);

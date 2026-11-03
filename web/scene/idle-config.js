@@ -49,6 +49,28 @@ export const IDLE_CONFIG = {
       '摸個魚 🐟',
     ],
   },
+  // The manager. ?boss=0 turns the patrol off and he behaves like everyone else.
+  // On error he stops walking; every other status he keeps patrolling.
+  boss: {
+    enabled: true,
+    name: 'BIG Boss',
+    speed: 1.05,
+    stop: [2.2, 3.8],
+    surprise: ['欸，我還在巡房', '放我下來啦'],
+    replies: ['是的老闆', '馬上改', '收到老闆', '好的好的'],
+    lines: {
+      '圖片哥': ['圖片哥，這個配色又要突破天際了？', '十年賭場設計還是這麼敢，我佩服也擔心', '圖片哥，創新可以，別把客戶嚇跑'],
+      '超級資深程式設計師': ['超級資深程式設計師，這次也是照辦就好？', '從不拒絕老闆，我都不好意思再加需求了', '你先點頭再做，記得喘口氣'],
+      '數據分析師': ['數據分析師，這張圖的小數點又在生氣？', '每個圖都要挑，我的簡報都不敢交了', '數字很準，眉毛可以放鬆一點'],
+      'G BO': ['G BO，去背又乾淨得不像話', '多尺寸一次出完，你是不是有分身？', '背景消失得太完美，我差點找不到圖'],
+      'VBO': ['VBO，全端加 AI，今晚還睡得著嗎', '從模型到介面都你包，記得喝水', 'VBO，這個功能又是你一個人扛？'],
+      '哥倫比亞-活動設計師': ['哥倫比亞的活動又要跟圖片哥聯手了？', '活動設計師，這波檔期先別跟圖片哥比大膽', '哥倫比亞那邊的案子，記得留一點留白'],
+      'Grok Bot': ['Grok Bot，雜事又堆到你頭上了？', '萬能助手也要排隊休息', 'Grok Bot，先把手上的再丟給別人'],
+      '新 Bot': ['新 Bot，第一天就這麼拼？', '新人不用一次學會全部', '新 Bot，迷路了就問，別硬撐'],
+      '*': ['{name}，在忙什麼？', '{name}，過來讓我看一下', '{name}，做得不錯，再收一收'],
+    },
+  },
+  drag: { enabled: true, surprise: ['咦？', '哇！', '放我下來'] },
   activities: {
     pace:    { enabled: true, weight: 1.15 },  // walk a loop around the lounge
     window:  { enabled: true, weight: 1.15 },  // stand at the glass, looking out
@@ -81,7 +103,17 @@ export function resolveIdleConfig(search = '') {
       cooldown: [...IDLE_CONFIG.chat.cooldown],
       lines: [...IDLE_CONFIG.chat.lines],
     },
+    boss: {
+      ...IDLE_CONFIG.boss,
+      stop: [...IDLE_CONFIG.boss.stop],
+      surprise: [...IDLE_CONFIG.boss.surprise],
+      replies: [...IDLE_CONFIG.boss.replies],
+      lines: Object.fromEntries(Object.entries(IDLE_CONFIG.boss.lines).map(([k, v]) => [k, [...v]])),
+    },
+    drag: { ...IDLE_CONFIG.drag, surprise: [...IDLE_CONFIG.drag.surprise] },
   };
+  if (q.get('boss') === '0' || q.get('boss') === 'off') cfg.boss.enabled = false;
+  if (q.get('drag') === '0' || q.get('drag') === 'off') cfg.drag.enabled = false;
   const mode = q.get('idle');
   if (mode === 'sofa' || mode === 'classic') cfg.sofaOnly = true;
   if (mode === 'live') cfg.sofaOnly = false;
@@ -92,6 +124,13 @@ export function resolveIdleConfig(search = '') {
   if (layout === 'split') cfg.splitRecFloor = true;
   if (layout === 'one' || layout === 'single') cfg.splitRecFloor = false;
   return cfg;
+}
+
+export function bossLine(name, cfg) {
+  const lines = cfg?.lines || {};
+  const list = lines[name] || lines['*'] || ['{name}，在忙什麼？'];
+  const text = list[Math.floor(Math.random() * list.length)] || '';
+  return text.replaceAll('{name}', name || '你');
 }
 
 export function idleActivitiesEnabled(cfg) {
