@@ -51,7 +51,7 @@ const clock = new THREE.Clock();
 const cam = {
   x: new Spring(HOME.x, 0.45), y: new Spring(HOME.y, 0.55), z: new Spring(HOME.z, 0.45), zoom: new Spring(0, 0.4),   // zoom is ln(zoom)
 };
-let hoveredId = null, pointerDirty = false, drag = null;
+let hoveredId = null, pointerDirty = false, drag = null, carry = null, pendingGrab = null;
 const touches = new Map();
 let pinch = null;
 let introDone = false, switchedAt = 0, nowSec = 0, settledOnce = false;
@@ -178,7 +178,11 @@ function sync() {
   const floorBots = Object.values(state.bots).filter((b) => b.floor === building.activeId);
   const ids = new Set(floorBots.map((b) => b.id));
 
-  for (const [id, actor] of actors) if (!ids.has(id)) { actor.retire(); retiring.add(actor); actors.delete(id); }
+  for (const [id, actor] of actors) if (!ids.has(id)) {
+    if (carry?.actorId === id) carry = null;
+    if (pendingGrab?.actorId === id) clearGrabWait();
+    actor.retire(); retiring.add(actor); actors.delete(id);
+  }
 
   const maxShare = Math.max(0.0001, ...floorBots.map((b) => b.usage_share || 0));
   const lounge = idleDirector?.enabled ? new Map() : assignLounge(floorBots);
@@ -188,7 +192,7 @@ function sync() {
   for (const bot of floorBots) {
     let actor = actors.get(bot.id);
     if (!actor) {
-      actor = new Actor(bot, { parent: inst.root, inst, pickables, confetti, cursor, dropDelay: delay });
+      actor = new Actor(bot, { parent: inst.root, inst, pickables, confetti, cursor, dropDelay: delay, actors, boss: idleConfig.boss });
       actors.set(bot.id, actor);
       attachModel(actor, bot);
     }
@@ -373,13 +377,19 @@ const pxPerMeter = () => renderer.domElement.clientHeight / ((camera.top - camer
 // ---------- pointer: pan, zoom, hover, click ----------
 
 function addPointerHandlers() {
-  const el = renderer.domElement;
+  const el = renderer?.domElement;
+  if (!el || typeof el.addEventListener !== 'function') return;
   el.addEventListener('pointermove', onMove);
   el.addEventListener('pointerleave', () => { cursor.active = false; setHover(null); });
   if (WALLPAPER) return;                              // a desktop background: bots follow the cursor, nothing else
   el.addEventListener('pointerdown', onDown);
   el.addEventListener('pointerup', onUp);
-  el.addEventListener('pointercancel', (e) => { touches.delete(e.pointerId); drag = null; pinch = null; });
+  el.addEventListener('pointercancel', (e) => {
+    touches.delete(e.pointerId);
+    if (carry?.id === e.pointerId) releaseCarry();
+    if (pendingGrab?.id === e.pointerId) clearGrabWait();
+    drag = null; pinch = null;
+  });
   el.addEventListener('wheel', onWheel, { passive: false });
   el.addEventListener('contextmenu', (e) => e.preventDefault());
 }
@@ -389,15 +399,60 @@ function setPointer(e) {
   pointer.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
 }
 
+function clearGrabWait() {
+  if (!pendingGrab) return;
+  clearTimeout(pendingGrab.timer);
+  pendingGrab = null;
+}
+
+function releaseCarry() {
+  if (!carry) return;
+  const actor = actors.get(carry.actorId);
+  carry = null;
+  try { actor?.dropCarry(); } catch { /* pointer path stays a camera drag */ }
+}
+
+function groundPoint() {
+  if (!building || !camera) return null;
+  raycaster.setFromCamera(pointer, camera);
+  groundPlane.constant = -building.activeY;
+  if (!raycaster.ray.intersectPlane(groundPlane, tmp)) return null;
+  return { x: tmp.x, z: tmp.z };
+}
+
+function beginCarry(token) {
+  if (!token || pendingGrab !== token) return;
+  pendingGrab = null;
+  const actor = actors.get(token.actorId);
+  if (!actor || actor.retiring || actor.dead || typeof actor.grab !== 'function') return;
+  const g = groundPoint();
+  try { actor.grab(g ? g.x : actor.root.position.x, g ? g.z : actor.root.position.z); }
+  catch { return; }
+  carry = { id: token.id, actorId: token.actorId };
+}
+
 function onDown(e) {
   renderer.domElement.setPointerCapture?.(e.pointerId);
   setPointer(e);
   touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
   if (touches.size === 2) {
+    releaseCarry();
+    clearGrabWait();
     const [a, b] = [...touches.values()];
     pinch = { d: Math.hypot(a.x - b.x, a.y - b.y), z: cam.zoom.target };
     drag = null;
     return;
+  }
+  if ((e.button == null || e.button === 0) && !carry) {
+    let hit = null;
+    try { hit = pick(); } catch { hit = null; }
+    if (hit && actors.has(hit)) {
+      const token = { id: e.pointerId, actorId: hit, x0: e.clientX, y0: e.clientY, timer: null };
+      token.timer = setTimeout(() => beginCarry(token), 210);
+      pendingGrab = token;
+      drag = null;
+      return;
+    }
   }
   drag = { id: e.pointerId, x0: e.clientX, y0: e.clientY, lx: e.clientX, ly: e.clientY, lt: performance.now(), panning: false, vx: 0, vz: 0 };
 }
@@ -411,6 +466,20 @@ function onMove(e) {
     const [a, b] = [...touches.values()];
     cam.zoom.to(pinch.z + Math.log(Math.hypot(a.x - b.x, a.y - b.y) / pinch.d));
     return;
+  }
+  if (carry && carry.id === e.pointerId) {
+    const g = groundPoint();
+    if (g) {
+      const actor = actors.get(carry.actorId);
+      try { actor?.setCarry(g.x, g.z); } catch { /* keep the hold even if the ground ray misses */ }
+    }
+    return;
+  }
+  if (pendingGrab && pendingGrab.id === e.pointerId) {
+    if (Math.hypot(e.clientX - pendingGrab.x0, e.clientY - pendingGrab.y0) <= 12) return;
+    const g = pendingGrab;
+    clearGrabWait();
+    drag = { id: g.id, x0: g.x0, y0: g.y0, lx: g.x0, ly: g.y0, lt: performance.now(), panning: true, vx: 0, vz: 0 };
   }
   if (!drag || drag.id !== e.pointerId) return;
   if (!drag.panning && Math.hypot(e.clientX - drag.x0, e.clientY - drag.y0) > 5) drag.panning = true;
@@ -432,6 +501,13 @@ function onMove(e) {
 function onUp(e) {
   touches.delete(e.pointerId);
   if (pinch) { if (touches.size < 2) pinch = null; drag = null; return; }
+  if (carry && carry.id === e.pointerId) { releaseCarry(); return; }
+  if (pendingGrab && pendingGrab.id === e.pointerId) {
+    clearGrabWait();
+    setPointer(e);
+    callbacks.onSelectBot?.(pick());
+    return;
+  }
   if (!drag || drag.id !== e.pointerId) return;
   const d = drag;
   drag = null;

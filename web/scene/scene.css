@@ -70,13 +70,13 @@
 /* idle small-talk: one bubble per pair, fading rather than popping */
 .hq-chat { pointer-events: none; user-select: none; -webkit-user-select: none; }
 .hq-chat-bubble {
-  max-width: 168px; padding: 6px 10px; border-radius: 14px 14px 14px 4px;
+  max-width: 220px; padding: 6px 10px; border-radius: 14px 14px 14px 4px;
   background: rgba(255, 255, 255, .92); color: #1D1D1F;
   border: 1px solid rgba(255, 255, 255, .9);
   box-shadow: 0 6px 16px rgba(0, 0, 0, .12);
   font-family: Inter, "PingFang TC", "Noto Sans TC", "WenQuanYi Micro Hei", system-ui, sans-serif;
   font-size: 14px; font-weight: 650; line-height: 1.25; letter-spacing: -.01em;
-  white-space: nowrap;
+  white-space: normal;
   opacity: 0; transform: translateY(6px) scale(.96);
   transition: opacity .35s ease, transform .35s ease;
 }
