@@ -198,8 +198,9 @@ function sync() {
     }
     const deskIdx = (DESK_ORDER[(bot.desk || 1) - 1] || 1) - 1;
     const desk = assets.spots.desks[deskIdx] || assets.spots.desks[0];
-    if ((bot.effective_status || bot.status) === 'working' && !lounge.has(bot.id)) flags[deskIdx] = 1;
     actor.update(bot, lounge.get(bot.id) || desk, { maxShare, selectedBot: view.selectedBot, idle: idleView });
+    const st = bot.effective_status || bot.status;
+    if ((st === 'working' || actor.deskTyping) && !lounge.has(bot.id)) flags[deskIdx] = 1;
   }
   building.setScreens(flags);
   const floor = floors.find((f) => f.id === building.activeId);

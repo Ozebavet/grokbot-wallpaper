@@ -176,8 +176,17 @@ export class Actor {
       const idleOn = status === 'idle' && !!view?.idle?.enabled;
       if (idleOn) {
         this.idleCtrl = view.idle;
-        if (!this.driveIdle && !this.idleGaveUp) this.beginIdle(spot);
+        this.deskSpot = spot;
+        this.rollDeskTyping();
+        if (this.deskTyping) {
+          if (this.driveIdle) this.endIdle();
+          if (spot && (!this.spot || this.spot.pos.distanceToSquared(spot.pos) > 1e-4)) {
+            if (!this.spot) this.dropIn(spot); else this.travelTo(spot);
+            this.spot = spot;
+          }
+        } else if (!this.driveIdle && !this.idleGaveUp) this.beginIdle(spot);
       } else {
+        this.deskTyping = false;
         this.idleGaveUp = false;
         if (this.driveIdle) this.endIdle();
         if (spot && (!this.spot || this.spot.pos.distanceToSquared(spot.pos) > 1e-4)) {
@@ -372,6 +381,32 @@ export class Actor {
     this.driveIdle = true;
     this.idle = { kind: null, left: 0, poseT: this.idleRng() * 4, pause: 0.3, path: null, pathI: 0, speed: 0.85 };
     this.applyChoice(choice, !this.spot);
+  }
+
+  // About 40% of idle bots sit and type at their own desk, re-rolled every so often.
+  rollDeskTyping() {
+    if (this.carried || this.retiring) return;
+    if (this.status !== 'idle' || this.bossPatrol || !this.idleCtrl?.enabled) {
+      this.deskTyping = false;
+      return;
+    }
+    const t = performance.now() / 1000;
+    if (this.deskRollAt && t < this.deskRollAt) return;
+    this.deskRollAt = t + 18 + (this.phase % 1) * 16;
+    const next = Math.random() < 0.4;
+    if (next === !!this.deskTyping) return;
+    this.deskTyping = next;
+    if (next) {
+      if (this.driveIdle) this.endIdle();
+      const desk = this.deskSpot;
+      if (desk && (!this.spot || this.spot.pos.distanceToSquared(desk.pos) > 1e-4)) {
+        if (!this.spot) this.dropIn(desk); else this.travelTo(desk);
+        this.spot = desk;
+      }
+    } else {
+      this.idleGaveUp = false;
+      if (!this.driveIdle) this.beginIdle(this.deskSpot || this.spot);
+    }
   }
 
   endIdle() {
@@ -605,6 +640,7 @@ export class Actor {
   }
 
   tick(dt, t) {
+    this.rollDeskTyping();
     this.tickIdle(dt);
     this.applyIdlePose();
     const p = this.pivot;
@@ -614,7 +650,7 @@ export class Actor {
     if (!REDUCED) {
       const breathe = Math.sin(t * 2.1 + this.phase);
       sy = 1 + 0.018 * breathe; sx = 1 - 0.012 * breathe;
-      if (s === 'working') { y = 0.012 * Math.abs(Math.sin(t * 9 + this.phase)); rx = 0.06; }
+      if (s === 'working' || this.deskTyping) { y = 0.012 * Math.abs(Math.sin(t * 9 + this.phase)); rx = 0.06; }
       if (s === 'stuck') rz = 0.09 * Math.sin(t * 1.3 + this.phase);
       if (s === 'error') {
         const k = (t + this.phase) % 1.6;
@@ -763,7 +799,7 @@ export class Actor {
     if (!this.eyes.length) return;
     const s = this.status;
     let open = 1;
-    if (s === 'idle' && !this.driveIdle && !this.spotIsLounge()) open = 0.12;   // sofa-only overflow: sleeping at the desk
+    if (s === 'idle' && !this.driveIdle && !this.spotIsLounge() && !this.deskTyping) open = 0.12;   // sofa-only overflow: sleeping at the desk
     else if (this.driveIdle && this.idle?.kind === 'sofa') open = 0.86;
     else if (s === 'error') open = 0.55;
     else if (s === 'stuck') open = 0.7;
