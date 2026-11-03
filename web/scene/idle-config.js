@@ -1,3 +1,5 @@
+import { EXTRA_CHAT_LINES } from './chat-lines.js';
+
 // Idle-time behaviour for bots whose status is `idle`.
 //
 // sofaOnly: true restores the original behaviour (idle bots sit on the lounge seats, and the
@@ -54,6 +56,7 @@ export const IDLE_CONFIG = {
       '你先講',
       '哈哈好啊',
       '摸個魚 🐟',
+      ...EXTRA_CHAT_LINES,
     ],
   },
   // Roster bot with this name, while idle, walks the desks instead of the activities above.
