@@ -238,6 +238,30 @@ export function enabledActivityList(cfg) {
   return IDLE_KINDS.filter((k) => cfg.activities[k]?.enabled && cfg.activities[k].weight > 0);
 }
 
+// A point beside `around` that is not inside a desk or the lounge, preferring behind them.
+export function openStandPoint(x, z, yaw = 0, dist = 1.05) {
+  const angles = [yaw + Math.PI, yaw + Math.PI / 2, yaw - Math.PI / 2, yaw + 2.3, yaw - 2.3, yaw];
+  for (const ang of angles) {
+    const px = x + Math.sin(ang) * dist;
+    const pz = z + Math.cos(ang) * dist;
+    if (px < -7.6 || px > 7.9 || pz < -5.45 || pz > 5.5) continue;
+    if (insideBlock(px, pz)) continue;
+    return { x: px, z: pz };
+  }
+  return { x: x + Math.sin(yaw + Math.PI) * dist, z: z + Math.cos(yaw + Math.PI) * dist };
+}
+
+export function bossNag(boss, name, rng) {
+  if (!boss) return '';
+  const n = String(name || '').trim();
+  const lines = boss.lines || {};
+  let list = lines[n];
+  if (!list && (n === '新Bot' || n === '新  Bot')) list = lines['新 Bot'];
+  if (!list?.length) list = boss.generic;
+  if (!list?.length) return '';
+  return list[Math.floor(rng() * list.length)];
+}
+
 // Furniture footprints (floor metres), padded so a blob does not walk through them.
 // A straight line that crosses one of these is sent around the open floor instead.
 const BLOCKS = [

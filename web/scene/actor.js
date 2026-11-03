@@ -4,7 +4,7 @@
 import * as THREE from 'three';
 import { CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
 import { Spring, REDUCED, clamp, smoothstep } from './spring.js';
-import { chooseIdleActivity, mulberry32, enabledActivityList, planIdleRoute } from './idle.js';
+import { chooseIdleActivity, mulberry32, enabledActivityList, planIdleRoute, openStandPoint, bossNag } from './idle.js';
 
 export const STATUS_COLOR = {
   working: '#34C759', idle: '#A1A1A6', waiting_user: '#FF9F0A', error: '#FF3B30', stuck: '#FF9500', done: '#0A84FF',
@@ -63,6 +63,7 @@ export class Actor {
     shadow.position.y = 0.006;
     shadow.renderOrder = 1;
     this.pivot.add(shadow);
+    this.shadow = shadow;
 
     this.ring = new THREE.Mesh(new THREE.PlaneGeometry(1.5, 1.5), new THREE.MeshBasicMaterial({ map: ringTexture, transparent: true, depthWrite: false, color: STATUS_COLOR.idle, opacity: 0 }));
     this.ring.rotation.x = -Math.PI / 2;
@@ -166,16 +167,23 @@ export class Actor {
     this.selected = view.selectedBot === bot.id;
     this.renderTag();
 
-    const idleOn = status === 'idle' && !!view?.idle?.enabled;
-    if (idleOn) {
-      this.idleCtrl = view.idle;
-      if (!this.driveIdle && !this.idleGaveUp) this.beginIdle(spot);
-    } else {
+    if (status === 'idle' && isBossBot(bot, this.ctx.boss)) {
       this.idleGaveUp = false;
-      if (this.driveIdle) this.endIdle();
-      if (spot && (!this.spot || this.spot.pos.distanceToSquared(spot.pos) > 1e-4)) {
-        if (!this.spot) this.dropIn(spot); else this.travelTo(spot);
-        this.spot = spot;
+      if (this.driveIdle && !this.bossPatrol) this.endIdle();
+      if (!this.bossPatrol) this.startBoss(spot);
+    } else {
+      if (this.bossPatrol) this.endBoss();
+      const idleOn = status === 'idle' && !!view?.idle?.enabled;
+      if (idleOn) {
+        this.idleCtrl = view.idle;
+        if (!this.driveIdle && !this.idleGaveUp) this.beginIdle(spot);
+      } else {
+        this.idleGaveUp = false;
+        if (this.driveIdle) this.endIdle();
+        if (spot && (!this.spot || this.spot.pos.distanceToSquared(spot.pos) > 1e-4)) {
+          if (!this.spot) this.dropIn(spot); else this.travelTo(spot);
+          this.spot = spot;
+        }
       }
     }
     this.ring.position.y = 0.012 - (this.spot ? this.spot.pos.y : 0);
@@ -218,6 +226,9 @@ export class Actor {
     if (this.retiring) return;
     this.retiring = true;
     this.hovered = false;
+    this.carried = false;
+    this.carry = null;
+    this.bossPatrol = false;
     this.endIdle();
     this.scaleS.to(0);
     for (const o of this.pickMeshes || []) this.ctx.pickables.delete(o);
@@ -372,6 +383,117 @@ export class Actor {
     this.idleCtrl?.release(this.id);
   }
 
+  startBoss(desk) {
+    this.bossPatrol = true;
+    this.driveIdle = true;
+    if (!this.idleRng) this.idleRng = mulberry32(hash(`${this.bot?.name || this.id}:boss`));
+    const speed = this.ctx.boss?.speed || 0.92;
+    this.idle = { kind: 'boss', left: 1e9, poseT: this.idleRng() * 2, pause: 0.3, path: null, pathI: 0, speed, detour: [], detourFinal: null };
+    this.boss = { targetId: null, left: 0.4, watching: false, line: '' };
+    if (!this.spot && desk) { this.dropIn(desk); this.spot = desk; }
+  }
+
+  endBoss() {
+    if (!this.bossPatrol && !this.boss) return;
+    this.bossPatrol = false;
+    this.boss = null;
+    this.setChat(null, null, 0);
+    this.endIdle();
+  }
+
+  pickEmployee() {
+    const list = [];
+    for (const a of this.ctx.actors?.values() || []) {
+      if (a !== this && !a.retiring && !a.dead) list.push(a);
+    }
+    if (!list.length) return null;
+    const pool = list.length > 1 ? list.filter((a) => a.id !== this.boss.targetId) : list;
+    return pool[Math.floor(this.idleRng() * pool.length)];
+  }
+
+  advanceBoss() {
+    this.setChat(null, null, 0);
+    const emp = this.pickEmployee();
+    if (!emp) {
+      this.boss.targetId = null;
+      this.boss.watching = true;
+      this.boss.left = 1.2;
+      this.boss.line = '';
+      return;
+    }
+    const p = openStandPoint(emp.root.position.x, emp.root.position.z, emp.baseYaw || 0, this.ctx.boss?.stand || 1.05);
+    const spot = {
+      pos: new THREE.Vector3(p.x, 0, p.z),
+      yaw: Math.atan2(emp.root.position.x - p.x, emp.root.position.z - p.z),
+    };
+    this.boss.targetId = emp.id;
+    this.boss.watching = false;
+    this.boss.line = bossNag(this.ctx.boss, emp.bot?.name, this.idleRng);
+    this.spot = spot;
+    this.beginMove(spot, this.idle.speed);
+  }
+
+  tickBoss(dt, moving) {
+    if (moving) {
+      if (this.chatShown) this.setChat(null, null, 0);
+      return;
+    }
+    if (!this.boss.watching) {
+      if (!this.boss.targetId) { this.advanceBoss(); return; }
+      this.boss.watching = true;
+      const [a, b] = this.ctx.boss?.pause || [2.8, 4.6];
+      this.boss.left = a + this.idleRng() * Math.max(0, b - a);
+    }
+    const emp = this.boss.targetId && this.ctx.actors?.get(this.boss.targetId);
+    if (emp && !emp.retiring && this.boss.line) {
+      const face = Math.atan2(emp.root.position.x - this.root.position.x, emp.root.position.z - this.root.position.z);
+      const side = emp.root.position.x >= this.root.position.x ? -1 : 1;
+      this.setChat(this.boss.line, face, side);
+      this.baseYaw = face;
+    }
+    this.boss.left -= dt;
+    if (this.boss.left <= 0) this.advanceBoss();
+  }
+
+  grab(x, z) {
+    this.carried = true;
+    this.carry = { x, z, y: 0.2, sway: 0, vx: 0, vz: 0 };
+    if (this.idle) { this.idle.detour = []; this.idle.detourFinal = null; }
+    this.anim = null;
+    this.setChat(null, null, 0);
+  }
+
+  setCarry(x, z) {
+    const c = this.carry;
+    if (!c) return;
+    const now = performance.now();
+    const dt = Math.max(0.016, ((now - (c.t || now)) / 1000));
+    c.vx = (x - c.x) / dt;
+    c.vz = (z - c.z) / dt;
+    c.x = x;
+    c.z = z;
+    c.t = now;
+  }
+
+  dropCarry() {
+    if (!this.carried) return;
+    const from = Math.max(0.35, this.carry?.y || 0.8);
+    this.carried = false;
+    this.carry = null;
+    this.anim = { kind: 'carryDrop', t: 0, dur: 0.5, from };
+  }
+
+  resumeAfterDrop() {
+    if (this.shadow) { this.shadow.position.y = 0.006; this.shadow.scale.setScalar(1); }
+    if (!this.spot || this.retiring) return;
+    if (this.bossPatrol && this.boss && !this.boss.watching) { this.advanceBoss(); return; }
+    if (this.driveIdle && this.idle) {
+      this.idle.detour = [];
+      this.idle.detourFinal = null;
+      this.beginMove(this.spot, this.idle.speed || 0.85);
+    } else this.travelTo(this.spot);
+  }
+
   idleActor() {
     const b = this.bot || {};
     return { id: this.id, name: b.name, group: b.group, favorite: this.idleFavorite };
@@ -416,8 +538,9 @@ export class Actor {
   }
 
   tickIdle(dt) {
+    if (this.carried) return;
     if (!this.driveIdle || !this.idle || this.retiring) return;
-    if (this.anim?.kind === 'drop') return;
+    if (this.anim?.kind === 'drop' || this.anim?.kind === 'carryDrop') return;
     const moving = this.anim?.kind === 'stroll' || this.anim?.kind === 'travel';
     const routing = !!(this.idle.detourFinal || this.idle.detour?.length);
     if (routing) {
@@ -427,6 +550,7 @@ export class Actor {
       }
       return;
     }
+    if (this.bossPatrol) return this.tickBoss(dt, moving);
     this.idle.left -= dt;
     if (moving) return;
     this.idle.poseT += dt;
@@ -440,6 +564,7 @@ export class Actor {
   applyIdlePose() {
     this.idleGaze = null;
     this.idleBody = null;
+    if (this.carried) return;
     if (!this.driveIdle || !this.idle || this.anim) return;
     const pt = this.idle.poseT, ph = this.phase;
     if (this.idle.kind === 'sofa') {
@@ -524,11 +649,38 @@ export class Actor {
         sy = 1 + (a.kind === 'stroll' ? 0.05 : 0.12) * lift;
         sx = 1 - (a.kind === 'stroll' ? 0.03 : 0.07) * lift;
         this.baseYaw = k < 0.92 ? a.travelYaw : a.toYaw;
+      } else if (a.kind === 'carryDrop') {
+        const fall = Math.min(1, k / 0.62);
+        y = a.from * (1 - fall * fall);
+        if (k > 0.62) {
+          const q = (k - 0.62) / 0.38;
+          y = Math.sin(q * Math.PI) * (1 - q) * Math.min(0.2, a.from * 0.22);
+          ({ sx, sy } = squash(q));
+        }
       }
       if (a.t >= a.dur) {
         if (a.kind === 'travel' || a.kind === 'stroll') { this.root.position.copy(a.to); this.baseYaw = a.toYaw; }
+        const dropped = a.kind === 'carryDrop';
         this.anim = null;
+        if (dropped) this.resumeAfterDrop();
       }
+    }
+
+    if (this.carried && this.carry) {
+      const c = this.carry;
+      c.sway += dt * (6.5 + Math.min(5, Math.hypot(c.vx, c.vz) * 0.35));
+      c.vx *= Math.exp(-dt * 6);
+      c.vz *= Math.exp(-dt * 6);
+      c.y += (1.12 - c.y) * Math.min(1, dt * 8);
+      const amp = (REDUCED ? 0.08 : 0.22) + Math.min(0.35, Math.hypot(c.vx, c.vz) * 0.03);
+      const swing = Math.sin(c.sway);
+      rz += swing * amp;
+      rx += Math.cos(c.sway * 0.7) * amp * 0.35;
+      y += c.y;
+      sy *= 1.06;
+      sx *= 0.93;
+      this.root.position.x = c.x + swing * (REDUCED ? 0.04 : 0.11);
+      this.root.position.z = c.z + Math.cos(c.sway * 0.85) * (REDUCED ? 0.02 : 0.05);
     }
 
     if (!this.anim && this.idleBody) {
@@ -542,13 +694,13 @@ export class Actor {
     // ---- cursor: look toward it, glance with the eyes, hop when it is close ----
     const cur = this.ctx.cursor;
     let w = 0, lookYaw = 0, dist = 99;
-    if (cur?.active && !this.retiring && this.hostAlpha > 0.6) {
+    if (cur?.active && !this.retiring && !this.carried && this.hostAlpha > 0.6) {
       const dx = cur.x - this.root.position.x, dz = cur.z - this.root.position.z;
       dist = Math.hypot(dx, dz);
       if (dist < LOOK_RANGE) { w = smoothstep(LOOK_RANGE, LOOK_RANGE - 1.3, dist); lookYaw = Math.atan2(dx, dz); }
     }
     this.hopCooldown -= dt;
-    if (dist < HOP_RANGE && this.hopCooldown <= 0 && !this.anim && !REDUCED) { this.hop(0.26); this.hopCooldown = HOP_COOLDOWN; }
+    if (dist < HOP_RANGE && this.hopCooldown <= 0 && !this.anim && !this.carried && !REDUCED) { this.hop(0.26); this.hopCooldown = HOP_COOLDOWN; }
 
     const moving = this.anim?.kind === 'travel' || this.anim?.kind === 'stroll';
     const base = (this.baseYaw || 0) + (moving ? 0 : RESTING_TURN);
@@ -566,6 +718,14 @@ export class Actor {
     const sel = this.selected ? 1.06 : 1;
     const sc = this.scaleS.step(dt);
     p.position.set(ox, y, 0);
+    const lift = this.carried ? this.carry.y : (this.anim?.kind === 'carryDrop' ? y : 0);
+    if (this.shadow && lift > 0.001) {
+      this.shadow.position.y = 0.006 - lift;
+      this.shadow.scale.setScalar(Math.max(0.45, 1 - lift * 0.32));
+    } else if (this.shadow) {
+      this.shadow.position.y = 0.006;
+      this.shadow.scale.setScalar(1);
+    }
     p.scale.set(sx * sel * sc, sy * sel * sc, sx * sel * sc);
     p.rotation.set(rx, this.yawS.x, rz, 'YXZ');
 
@@ -638,6 +798,10 @@ export class Actor {
 
 export function jelly(color) {
   return new THREE.MeshPhysicalMaterial({ color, roughness: 0.32, clearcoat: 1, clearcoatRoughness: 0.18, sheen: 0.3 });
+}
+
+function isBossBot(bot, boss) {
+  return !!(boss?.enabled && (bot?.name || '').trim() === String(boss.name || 'BIG Boss').trim());
 }
 
 function reasonText(status, step) {

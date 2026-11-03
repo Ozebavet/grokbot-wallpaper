@@ -6,7 +6,7 @@ function pairKey(a, b) {
 }
 
 function canChat(actor) {
-  if (!actor || actor.retiring || actor.dead) return false;
+  if (!actor || actor.retiring || actor.dead || actor.bossPatrol || actor.carried) return false;
   if (actor.status !== 'idle' || !actor.driveIdle) return false;
   if (actor.hostAlpha != null && actor.hostAlpha < 0.5) return false;
   const kind = actor.anim?.kind;
@@ -89,6 +89,7 @@ export function createChats(config) {
       }
 
       for (const actor of actors.values()) {
+        if (actor.bossPatrol || actor.carried) continue;
         const turn = show.get(actor.id);
         if (!turn) { actor.setChat?.(null, null, 0); continue; }
         const face = Math.atan2(turn.other.root.position.x - actor.root.position.x, turn.other.root.position.z - actor.root.position.z);
