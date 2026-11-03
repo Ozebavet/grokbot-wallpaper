@@ -422,6 +422,7 @@ function groundPoint() {
 
 function beginCarry(token) {
   if (!token || pendingGrab !== token) return;
+  clearTimeout(token.timer);
   pendingGrab = null;
   const actor = actors.get(token.actorId);
   if (!actor || actor.retiring || actor.dead || typeof actor.grab !== 'function') return;
@@ -476,10 +477,14 @@ function onMove(e) {
     return;
   }
   if (pendingGrab && pendingGrab.id === e.pointerId) {
-    if (Math.hypot(e.clientX - pendingGrab.x0, e.clientY - pendingGrab.y0) <= 12) return;
-    const g = pendingGrab;
-    clearGrabWait();
-    drag = { id: g.id, x0: g.x0, y0: g.y0, lx: g.x0, ly: g.y0, lt: performance.now(), panning: true, vx: 0, vz: 0 };
+    // Moving after a press on a bot carries that bot. It must not become a camera pan.
+    if (Math.hypot(e.clientX - pendingGrab.x0, e.clientY - pendingGrab.y0) <= 5) return;
+    beginCarry(pendingGrab);
+    const g = groundPoint();
+    if (carry && g) {
+      try { actors.get(carry.actorId)?.setCarry(g.x, g.z); } catch { /* keep holding */ }
+    }
+    return;
   }
   if (!drag || drag.id !== e.pointerId) return;
   if (!drag.panning && Math.hypot(e.clientX - drag.x0, e.clientY - drag.y0) > 5) drag.panning = true;
