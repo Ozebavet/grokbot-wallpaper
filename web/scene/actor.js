@@ -575,14 +575,20 @@ export class Actor {
     if (this.held && this.holdTarget) {
       const dx = this.holdTarget.x - this.root.position.x;
       const dz = this.holdTarget.z - this.root.position.z;
-      this.holdVx = (this.holdVx || 0) + dx * 26 * dt;
-      this.holdVz = (this.holdVz || 0) + dz * 26 * dt;
-      const damp = Math.exp(-2.4 * dt);
+      const prevVx = this.holdVx || 0;
+      this.holdVx = prevVx + dx * 22 * dt;
+      this.holdVz = (this.holdVz || 0) + dz * 22 * dt;
+      const damp = Math.exp(-1.6 * dt);
       this.holdVx *= damp;
       this.holdVz *= damp;
       this.root.position.x += this.holdVx * dt;
       this.root.position.z += this.holdVz * dt;
-      this.dangle = clamp((this.holdVx || 0) * 0.14, -0.6, 0.6);
+      // a short pendulum: sideways acceleration tips the body, then it swings back
+      const accel = (this.holdVx - prevVx) / Math.max(dt, 0.016);
+      this.swingV = (this.swingV || 0) + (-9 * (this.swing || 0) - accel * 0.22) * dt;
+      this.swingV *= Math.exp(-0.8 * dt);
+      this.swing = clamp((this.swing || 0) + this.swingV * dt, -0.75, 0.75);
+      this.dangle = this.swing;
     } else if (this.bossOn && !this.landing) this.tickBoss(dt);
     if (!this.held) { this.tickIdle(dt); this.applyIdlePose(); }
     const p = this.pivot;
@@ -634,7 +640,7 @@ export class Actor {
       }
     }
 
-    if (this.held) { y = 0.55; rz = this.dangle || 0; sx = 1; sy = 1; }
+    if (this.held) { y = 0.62; rz = this.dangle || 0; ox = (this.dangle || 0) * 0.22; sx = 1; sy = 1.04; }
     else if (this.landing) {
       this.landing.t += dt;
       const k = this.landing.t / 0.48;
